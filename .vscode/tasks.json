@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Streamlit app",
+      "type": "shell",
+      "command": "streamlit run src/app.py",
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "Init database schema",
+      "type": "shell",
+      "command": "psql \"$DATABASE_URL\" -f scripts/init_db.sql",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run ingestion pipeline",
+      "type": "shell",
+      "command": "python -m src.ingestion.pgn_parser --input data/raw/sample.pgn",
+      "problemMatcher": []
+    },
+    {
+      "label": "Format + lint (ruff)",
+      "type": "shell",
+      "command": "ruff check --fix . && ruff format .",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run tests",
+      "type": "shell",
+      "command": "pytest -v tests",
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "charliermarsh.ruff",
+
+    "ms-ossdata.vscode-pgsql",
+
+    "esbenp.prettier-vscode",
+    "dbaeumer.vscode-eslint",
+
+    "mtxr.sqltools",
+    "mtxr.sqltools-driver-pg",
+
+    "streetsidesoftware.code-spell-checker",
+    "eamodio.gitlens",
+    "tamasfe.even-better-toml"
+  ]
+}

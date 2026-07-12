@@ -1,0 +1,24 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# node (future JS board component)
+node_modules/
+dist/
+
+# data — raw PGN dumps and any personally-owned copyrighted book text
+# never commit these; keep public-domain-only sources if you want data in the repo
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# OS
+.DS_Store
