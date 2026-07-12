@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS moves (
 
 CREATE TABLE IF NOT EXISTS chunks (
     chunk_id SERIAL PRIMARY KEY,
+    chunk_hash TEXT NOT NULL UNIQUE,  -- content hash; natural key for idempotent loads
     source_type TEXT NOT NULL,   -- 'game_annotation' | 'book'
     game_id TEXT,                -- nullable, populated for game_annotation chunks
     source_title TEXT,

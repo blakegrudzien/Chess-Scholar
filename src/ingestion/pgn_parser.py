@@ -48,18 +48,21 @@ class GameRecord:
     moves: list[MoveRecord] = field(default_factory=list)
 
 
-def _parse_year(date_header: str | None) -> int | None:
+def parse_year(date_header: str | None) -> int | None:
     if not date_header:
         return None
     year_str = date_header[:4]
     return int(year_str) if year_str.isdigit() else None
 
 
-def _game_id(headers: chess.pgn.Headers, moves: list[MoveRecord]) -> str:
-    """Deterministic id so re-parsing the same PGN yields the same game_id
-    (required for idempotent ON CONFLICT DO NOTHING inserts in db_loader).
+def compute_game_id(headers: chess.pgn.Headers, move_sans: list[str]) -> str:
+    """Deterministic id derived from headers + SAN move sequence.
+
+    Used as the natural key for idempotent ON CONFLICT DO NOTHING inserts in
+    db_loader, and shared with annotation_extractor.py so annotation chunks
+    extracted from the same game agree on game_id and can join back to it.
     """
-    move_text = " ".join(move.move_san for move in moves)
+    move_text = " ".join(move_sans)
     canonical = "|".join(
         [
             headers.get("White", ""),
@@ -121,11 +124,11 @@ def parse_game(game: chess.pgn.Game, source: str) -> GameRecord:
         moves.append(move_record)
 
     return GameRecord(
-        game_id=_game_id(headers, moves),
+        game_id=compute_game_id(headers, [move.move_san for move in moves]),
         white=headers.get("White"),
         black=headers.get("Black"),
         event=headers.get("Event"),
-        year=_parse_year(headers.get("Date")),
+        year=parse_year(headers.get("Date")),
         eco_code=headers.get("ECO"),
         result=headers.get("Result"),
         source=source,

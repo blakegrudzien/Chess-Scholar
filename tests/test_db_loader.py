@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
-from src.ingestion.db_loader import get_connection, load_games
+from src.ingestion.annotation_extractor import AnnotationChunk
+from src.ingestion.db_loader import get_connection, load_chunks, load_games
 from src.ingestion.pgn_parser import GameRecord, MoveRecord
 
 
@@ -86,3 +87,73 @@ def test_load_games_reports_zero_when_conflict_skips_row():
         games_inserted, moves_inserted = load_games([game], conn)
 
     assert (games_inserted, moves_inserted) == (0, 0)
+
+
+def _sample_chunk() -> AnnotationChunk:
+    return AnnotationChunk(
+        source_type="game_annotation",
+        game_id="abc123",
+        source_title=None,
+        author=None,
+        year=2021,
+        eco_code="C00",
+        ply_or_page="8",
+        text="Bxb4!?: Accepting the gambit.",
+    )
+
+
+def test_load_chunks_inserts_with_content_hash_key():
+    chunk = _sample_chunk()
+    conn = MagicMock()
+    cursor = conn.cursor.return_value.__enter__.return_value
+    cursor.rowcount = 1
+
+    with patch("src.ingestion.db_loader.execute_values") as mock_execute_values:
+        chunks_inserted = load_chunks([chunk], conn)
+
+    assert chunks_inserted == 1
+    mock_execute_values.assert_called_once()
+
+    sql, rows = mock_execute_values.call_args.args[1], mock_execute_values.call_args.args[2]
+    assert "INSERT INTO chunks" in sql
+    assert "ON CONFLICT (chunk_hash) DO NOTHING" in sql
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[1:] == (
+        "game_annotation",
+        "abc123",
+        None,
+        None,
+        2021,
+        "C00",
+        "8",
+        "Bxb4!?: Accepting the gambit.",
+    )
+    assert isinstance(row[0], str) and len(row[0]) == 64  # sha256 hex digest
+
+    conn.commit.assert_called_once()
+
+
+def test_load_chunks_hash_is_deterministic_across_calls():
+    chunk = _sample_chunk()
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.rowcount = 1
+
+    with patch("src.ingestion.db_loader.execute_values") as mock_execute_values:
+        load_chunks([chunk], conn)
+        first_hash = mock_execute_values.call_args.args[2][0][0]
+
+        load_chunks([chunk], conn)
+        second_hash = mock_execute_values.call_args.args[2][0][0]
+
+    assert first_hash == second_hash
+
+
+def test_load_chunks_skips_insert_when_no_chunks():
+    conn = MagicMock()
+    with patch("src.ingestion.db_loader.execute_values") as mock_execute_values:
+        chunks_inserted = load_chunks([], conn)
+
+    assert chunks_inserted == 0
+    mock_execute_values.assert_not_called()
+    conn.commit.assert_called_once()

@@ -1,14 +1,18 @@
-"""Load parsed PGN records (src/ingestion/pgn_parser.py) into the games/moves
-tables defined in scripts/init_db.sql.
+"""Load parsed PGN records (pgn_parser.py, annotation_extractor.py) into the
+games/moves/chunks tables defined in scripts/init_db.sql.
 
-Inserts are idempotent: game_id is a deterministic content hash (see
-pgn_parser._game_id), so re-running ingestion on the same PGN file hits
-ON CONFLICT DO NOTHING instead of creating duplicate rows.
+Inserts are idempotent:
+- game_id is a deterministic content hash (see pgn_parser.compute_game_id),
+  so re-running ingestion on the same PGN file hits ON CONFLICT DO NOTHING
+  instead of creating duplicate games/moves rows.
+- chunks has no natural key otherwise (chunk_id is a bare SERIAL), so chunk
+  rows are keyed on chunk_hash, a content hash computed here.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 from collections.abc import Iterable
 
@@ -17,6 +21,7 @@ import psycopg2.extensions
 from dotenv import load_dotenv
 from psycopg2.extras import execute_values
 
+from src.ingestion.annotation_extractor import AnnotationChunk, extract_annotations
 from src.ingestion.pgn_parser import GameRecord, parse_pgn
 
 GAMES_INSERT = """
@@ -32,6 +37,14 @@ MOVES_INSERT = """
     )
     VALUES %s
     ON CONFLICT (game_id, ply) DO NOTHING
+"""
+
+CHUNKS_INSERT = """
+    INSERT INTO chunks (
+        chunk_hash, source_type, game_id, source_title, author, year, eco_code, ply_or_page, text
+    )
+    VALUES %s
+    ON CONFLICT (chunk_hash) DO NOTHING
 """
 
 
@@ -93,20 +106,81 @@ def load_games(
     return games_inserted, moves_inserted
 
 
+def _chunk_hash(chunk: AnnotationChunk) -> str:
+    canonical = "|".join(
+        [
+            chunk.source_type,
+            chunk.game_id or "",
+            chunk.source_title or "",
+            chunk.author or "",
+            chunk.ply_or_page or "",
+            chunk.text,
+        ]
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def load_chunks(chunks: Iterable[AnnotationChunk], conn: psycopg2.extensions.connection) -> int:
+    """Insert annotation/book chunks. Returns the number of rows actually
+    inserted (rows skipped by ON CONFLICT don't count).
+    """
+    rows = [
+        (
+            _chunk_hash(chunk),
+            chunk.source_type,
+            chunk.game_id,
+            chunk.source_title,
+            chunk.author,
+            chunk.year,
+            chunk.eco_code,
+            chunk.ply_or_page,
+            chunk.text,
+        )
+        for chunk in chunks
+    ]
+
+    chunks_inserted = 0
+    with conn.cursor() as cur:
+        if rows:
+            execute_values(cur, CHUNKS_INSERT, rows)
+            chunks_inserted = cur.rowcount
+
+    conn.commit()
+    return chunks_inserted
+
+
 def _main() -> None:
-    parser = argparse.ArgumentParser(description="Load a PGN file into the games/moves tables.")
+    parser = argparse.ArgumentParser(description="Load PGN-derived records into Postgres.")
     parser.add_argument("--input", required=True, help="Path to a PGN file")
-    parser.add_argument("--source", default="lichess", help="Value for the games.source column")
+    parser.add_argument(
+        "--mode",
+        choices=["games", "chunks"],
+        default="games",
+        help="'games' loads games+moves via pgn_parser; "
+        "'chunks' loads annotation chunks via annotation_extractor",
+    )
+    parser.add_argument("--source", default="lichess", help="games mode: games.source column")
+    parser.add_argument("--source-title", default=None, help="chunks mode: chunks.source_title")
+    parser.add_argument("--author", default=None, help="chunks mode: chunks.author")
     args = parser.parse_args()
 
-    games = parse_pgn(args.input, source=args.source)
     conn = get_connection()
     try:
-        games_inserted, moves_inserted = load_games(games, conn)
+        if args.mode == "games":
+            games = parse_pgn(args.input, source=args.source)
+            games_inserted, moves_inserted = load_games(games, conn)
+            print(
+                f"Inserted {games_inserted} new game(s), {moves_inserted} "
+                f"new move(s) from {args.input}"
+            )
+        else:
+            chunks = extract_annotations(
+                args.input, source_title=args.source_title, author=args.author
+            )
+            chunks_inserted = load_chunks(chunks, conn)
+            print(f"Inserted {chunks_inserted} new chunk(s) from {args.input}")
     finally:
         conn.close()
-
-    print(f"Inserted {games_inserted} new game(s), {moves_inserted} new move(s) from {args.input}")
 
 
 if __name__ == "__main__":
