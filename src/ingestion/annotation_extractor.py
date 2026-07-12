@@ -5,6 +5,9 @@ ChessBase exports sometimes use Windows-1252 rather than UTF-8, so the file is
 read as bytes and decoded with a fallback. NAG glyphs (numeric move-quality
 codes like NAG 1 = "!") are mapped to their standard symbols and folded into
 the comment prose, since raw NAG numbers aren't useful embedding text.
+PGN computer-annotation glyphs embedded in comments (e.g. "[%evp 0,79,...]"
+eval curves, "[%clk 0:05:23]" clock times, "[%cal ...]"/"[%csl ...]" GUI
+arrows/highlights) are stripped for the same reason.
 
 game_id is computed the same way as pgn_parser.compute_game_id (headers + SAN
 move sequence) so annotation chunks extracted here join back to the games
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +64,17 @@ def _nags_to_prose(nags: set[int]) -> str:
     return "".join(NAG_SYMBOLS[nag] for nag in sorted(nags) if nag in NAG_SYMBOLS)
 
 
+_PGN_GLYPH_RE = re.compile(r"\[%[^\]]*\]")
+
+
+def _strip_computer_glyphs(comment: str) -> str:
+    """Remove GUI-only annotation glyphs (eval curves, clocks, arrows, square
+    highlights); they aren't meaningful text for RAG embedding.
+    """
+    without_glyphs = _PGN_GLYPH_RE.sub("", comment)
+    return re.sub(r"\s+", " ", without_glyphs).strip()
+
+
 def _read_pgn_text(path: str | Path) -> str:
     """Decode a PGN export, falling back to Windows-1252 if it isn't UTF-8."""
     raw = Path(path).read_bytes()
@@ -85,11 +100,11 @@ def _extract_game_annotations(
         move_san = board.san(move)  # must be computed before push, same as pgn_parser
         board.push(move)
         move_sans.append(move_san)
-        ply_annotations.append((ply, move_san, node.comment.strip(), node.nags))
+        ply_annotations.append((ply, move_san, _strip_computer_glyphs(node.comment), node.nags))
 
     game_id = compute_game_id(headers, move_sans)
 
-    pre_game_comment = game.comment.strip()
+    pre_game_comment = _strip_computer_glyphs(game.comment)
     if pre_game_comment:
         yield AnnotationChunk(
             source_type="game_annotation",

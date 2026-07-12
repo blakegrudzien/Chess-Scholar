@@ -61,6 +61,33 @@ def test_game_id_matches_pgn_parser_for_same_game(pgn_file):
     assert all(chunk.game_id == expected_game_id for chunk in chunks)
 
 
+def test_glyph_only_comment_produces_no_chunk(tmp_path):
+    # PGN comments containing only a GUI directive (eval curve, clock, arrow,
+    # square highlight) aren't meaningful prose and shouldn't become a chunk.
+    text = SAMPLE_PGN.replace(
+        "{Pre-game notes: an Evans Gambit demo.}", "{[%evp 0,13,30,17,14,-9,25,35,38,41,11,14,5]}"
+    )
+    path = tmp_path / "glyph_only.pgn"
+    path.write_text(text, encoding="utf-8")
+
+    chunks = list(extract_annotations(path))
+    assert len(chunks) == 1  # only the Bxb4 comment survives; pre-game chunk is dropped
+    assert chunks[0].ply_or_page == "8"
+
+
+def test_glyph_mixed_with_prose_keeps_prose_only(tmp_path):
+    text = SAMPLE_PGN.replace(
+        "Accepting the gambit.", "Accepting the gambit. [%cal Ge4e5] Sharp play follows."
+    )
+    path = tmp_path / "glyph_mixed.pgn"
+    path.write_text(text, encoding="utf-8")
+
+    chunks = list(extract_annotations(path))
+    move_chunk = chunks[1]
+    assert "%cal" not in move_chunk.text
+    assert move_chunk.text == "Bxb4!?: Accepting the gambit. Sharp play follows."
+
+
 def test_windows_1252_fallback_decoding(tmp_path):
     # ChessBase exports are sometimes Windows-1252 rather than UTF-8;
     # an en dash (U+2013) is a byte that's invalid as standalone UTF-8
