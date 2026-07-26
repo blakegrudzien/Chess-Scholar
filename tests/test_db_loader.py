@@ -56,6 +56,10 @@ def test_load_games_inserts_games_and_moves():
     assert "INSERT INTO games" in games_sql
     assert "ON CONFLICT (game_id) DO NOTHING" in games_sql
     assert games_rows == [("abc123", "Alice", "Bob", "Test Event", 2021, "C00", "1-0", "lichess")]
+    # page_size must match the batch, or cur.rowcount silently reflects only
+    # execute_values' last internal page (default page_size=100) instead of
+    # the true total -- this is exactly the bug that slipped through before.
+    assert games_call.kwargs["page_size"] == len(games_rows)
 
     moves_sql, moves_rows = moves_call.args[1], moves_call.args[2]
     assert "INSERT INTO moves" in moves_sql
@@ -63,6 +67,7 @@ def test_load_games_inserts_games_and_moves():
     assert moves_rows == [
         ("abc123", 1, "e4", "e2e4", "e2", "e4", "P", False, None, 0, game.moves[0].fen_after)
     ]
+    assert moves_call.kwargs["page_size"] == len(moves_rows)
 
     conn.commit.assert_called_once()
 
@@ -87,6 +92,41 @@ def test_load_games_reports_zero_when_conflict_skips_row():
         games_inserted, moves_inserted = load_games([game], conn)
 
     assert (games_inserted, moves_inserted) == (0, 0)
+
+
+def test_load_games_flushes_in_batches():
+    # A large PGN file shouldn't hold every row in memory until the end --
+    # verify flush actually happens mid-stream, not just once at completion.
+    games = [
+        GameRecord(
+            game_id=f"game{i}",
+            white="Alice",
+            black="Bob",
+            event="Test",
+            year=2021,
+            eco_code="C00",
+            result="1-0",
+            source="lichess",
+            moves=[],
+        )
+        for i in range(5)
+    ]
+    conn = MagicMock()
+
+    def fake_execute_values(cur, _sql, rows, **_kwargs):
+        cur.rowcount = len(rows)  # mirror real psycopg2: rowcount reflects this call's batch
+
+    with (
+        patch("src.ingestion.db_loader.GAMES_BATCH_SIZE", 2),
+        patch(
+            "src.ingestion.db_loader.execute_values", side_effect=fake_execute_values
+        ) as mock_execute_values,
+    ):
+        games_inserted, _ = load_games(games, conn)
+
+    assert games_inserted == 5
+    assert mock_execute_values.call_count == 3  # batches of 2, 2, 1
+    assert conn.commit.call_count == 3
 
 
 def _sample_chunk() -> AnnotationChunk:
@@ -118,6 +158,7 @@ def test_load_chunks_inserts_with_content_hash_key():
     assert "INSERT INTO chunks" in sql
     assert "ON CONFLICT (chunk_hash) DO NOTHING" in sql
     assert len(rows) == 1
+    assert mock_execute_values.call_args.kwargs["page_size"] == len(rows)
     row = rows[0]
     assert row[1:] == (
         "game_annotation",
@@ -157,3 +198,35 @@ def test_load_chunks_skips_insert_when_no_chunks():
     assert chunks_inserted == 0
     mock_execute_values.assert_not_called()
     conn.commit.assert_called_once()
+
+
+def test_load_chunks_flushes_in_batches():
+    chunks = [
+        AnnotationChunk(
+            source_type="game_annotation",
+            game_id="abc123",
+            source_title=None,
+            author=None,
+            year=2021,
+            eco_code="C00",
+            ply_or_page=str(i),
+            text=f"chunk {i}",
+        )
+        for i in range(5)
+    ]
+    conn = MagicMock()
+
+    def fake_execute_values(cur, _sql, rows, **_kwargs):
+        cur.rowcount = len(rows)  # mirror real psycopg2: rowcount reflects this call's batch
+
+    with (
+        patch("src.ingestion.db_loader.CHUNKS_BATCH_SIZE", 2),
+        patch(
+            "src.ingestion.db_loader.execute_values", side_effect=fake_execute_values
+        ) as mock_execute_values,
+    ):
+        chunks_inserted = load_chunks(chunks, conn)
+
+    assert chunks_inserted == 5
+    assert mock_execute_values.call_count == 3  # batches of 2, 2, 1
+    assert conn.commit.call_count == 3

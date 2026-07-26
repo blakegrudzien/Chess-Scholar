@@ -11,6 +11,8 @@ from pathlib import Path
 import chess
 import chess.pgn
 
+from src.ingestion.pgn_encoding import PGN_DECODE_ERRORS
+
 PIECE_VALUES = {
     chess.PAWN: 1,
     chess.KNIGHT: 3,
@@ -138,7 +140,7 @@ def parse_game(game: chess.pgn.Game, source: str) -> GameRecord:
 
 def parse_pgn(path: str | Path, source: str) -> Iterator[GameRecord]:
     """Yield one GameRecord per game found in the PGN file at `path`."""
-    with open(path, encoding="utf-8") as pgn_file:
+    with open(path, encoding="utf-8", errors=PGN_DECODE_ERRORS) as pgn_file:
         while True:
             game = chess.pgn.read_game(pgn_file)
             if game is None:

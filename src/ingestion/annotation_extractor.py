@@ -1,13 +1,13 @@
 """Extract prose annotations (move comments + NAGs) from ChessBase PGN exports
 into chunk-ready records matching the chunks table in scripts/init_db.sql.
 
-ChessBase exports sometimes use Windows-1252 rather than UTF-8, so the file is
-read as bytes and decoded with a fallback. NAG glyphs (numeric move-quality
-codes like NAG 1 = "!") are mapped to their standard symbols and folded into
-the comment prose, since raw NAG numbers aren't useful embedding text.
-PGN computer-annotation glyphs embedded in comments (e.g. "[%evp 0,79,...]"
-eval curves, "[%clk 0:05:23]" clock times, "[%cal ...]"/"[%csl ...]" GUI
-arrows/highlights) are stripped for the same reason.
+See pgn_encoding.py for how Windows-1252/UTF-8 encoding issues in ChessBase
+exports are handled. NAG glyphs (numeric move-quality codes like NAG 1 = "!")
+are mapped to their standard symbols and folded into the comment prose, since
+raw NAG numbers aren't useful embedding text. PGN computer-annotation glyphs
+embedded in comments (e.g. "[%evp 0,79,...]" eval curves, "[%clk 0:05:23]"
+clock times, "[%cal ...]"/"[%csl ...]" GUI arrows/highlights) are stripped
+for the same reason.
 
 game_id is computed the same way as pgn_parser.compute_game_id (headers + SAN
 move sequence) so annotation chunks extracted here join back to the games
@@ -17,7 +17,6 @@ inserted by db_loader via the same key.
 from __future__ import annotations
 
 import argparse
-import io
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -26,6 +25,7 @@ from pathlib import Path
 import chess
 import chess.pgn
 
+from src.ingestion.pgn_encoding import PGN_DECODE_ERRORS
 from src.ingestion.pgn_parser import compute_game_id, parse_year
 
 # Standard PGN Numeric Annotation Glyphs for move quality / evaluation.
@@ -73,15 +73,6 @@ def _strip_computer_glyphs(comment: str) -> str:
     """
     without_glyphs = _PGN_GLYPH_RE.sub("", comment)
     return re.sub(r"\s+", " ", without_glyphs).strip()
-
-
-def _read_pgn_text(path: str | Path) -> str:
-    """Decode a PGN export, falling back to Windows-1252 if it isn't UTF-8."""
-    raw = Path(path).read_bytes()
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return raw.decode("cp1252")
 
 
 def _extract_game_annotations(
@@ -140,12 +131,12 @@ def extract_annotations(
     """Yield one AnnotationChunk per commented move (plus a pre-game chunk if
     the PGN has a starting comment) across all games in the file at `path`.
     """
-    pgn_stream = io.StringIO(_read_pgn_text(path))
-    while True:
-        game = chess.pgn.read_game(pgn_stream)
-        if game is None:
-            break
-        yield from _extract_game_annotations(game, source_title, author)
+    with open(path, encoding="utf-8", errors=PGN_DECODE_ERRORS) as pgn_stream:
+        while True:
+            game = chess.pgn.read_game(pgn_stream)
+            if game is None:
+                break
+            yield from _extract_game_annotations(game, source_title, author)
 
 
 def _main() -> None:

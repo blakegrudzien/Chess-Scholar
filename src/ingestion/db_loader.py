@@ -7,6 +7,11 @@ Inserts are idempotent:
   instead of creating duplicate games/moves rows.
 - chunks has no natural key otherwise (chunk_id is a bare SERIAL), so chunk
   rows are keyed on chunk_hash, a content hash computed here.
+
+Inserts are batched (flushed + committed every GAMES_BATCH_SIZE games /
+CHUNKS_BATCH_SIZE chunks) rather than materializing an entire large PGN file's
+rows in memory before one insert -- a single ChessBase export can be
+hundreds of thousands of games/chunks.
 """
 
 from __future__ import annotations
@@ -47,6 +52,9 @@ CHUNKS_INSERT = """
     ON CONFLICT (chunk_hash) DO NOTHING
 """
 
+GAMES_BATCH_SIZE = 500  # games per flush (also bounds moves held in memory at once)
+CHUNKS_BATCH_SIZE = 5000  # chunks per flush
+
 
 def get_connection() -> psycopg2.extensions.connection:
     load_dotenv()
@@ -57,11 +65,31 @@ def get_connection() -> psycopg2.extensions.connection:
 def load_games(
     games: Iterable[GameRecord], conn: psycopg2.extensions.connection
 ) -> tuple[int, int]:
-    """Insert games and their moves. Returns (games_inserted, moves_inserted),
-    counting only rows that weren't already present.
+    """Insert games and their moves, flushing every GAMES_BATCH_SIZE games.
+    Returns (games_inserted, moves_inserted), counting only rows that weren't
+    already present.
     """
-    game_rows = []
-    move_rows = []
+    games_inserted = 0
+    moves_inserted = 0
+    game_rows: list[tuple] = []
+    move_rows: list[tuple] = []
+
+    def flush() -> None:
+        nonlocal games_inserted, moves_inserted, game_rows, move_rows
+        with conn.cursor() as cur:
+            if game_rows:
+                # page_size=len(rows): without this, execute_values silently
+                # sub-pages in groups of 100, and cur.rowcount afterward only
+                # reflects the *last* internal page, not the true total.
+                execute_values(cur, GAMES_INSERT, game_rows, page_size=len(game_rows))
+                games_inserted += cur.rowcount
+            if move_rows:
+                execute_values(cur, MOVES_INSERT, move_rows, page_size=len(move_rows))
+                moves_inserted += cur.rowcount
+        conn.commit()
+        game_rows = []
+        move_rows = []
+
     for game in games:
         game_rows.append(
             (
@@ -91,18 +119,10 @@ def load_games(
             )
             for move in game.moves
         )
+        if len(game_rows) >= GAMES_BATCH_SIZE:
+            flush()
 
-    games_inserted = 0
-    moves_inserted = 0
-    with conn.cursor() as cur:
-        if game_rows:
-            execute_values(cur, GAMES_INSERT, game_rows)
-            games_inserted = cur.rowcount
-        if move_rows:
-            execute_values(cur, MOVES_INSERT, move_rows)
-            moves_inserted = cur.rowcount
-
-    conn.commit()
+    flush()  # remaining partial batch
     return games_inserted, moves_inserted
 
 
@@ -121,31 +141,40 @@ def _chunk_hash(chunk: AnnotationChunk) -> str:
 
 
 def load_chunks(chunks: Iterable[AnnotationChunk], conn: psycopg2.extensions.connection) -> int:
-    """Insert annotation/book chunks. Returns the number of rows actually
-    inserted (rows skipped by ON CONFLICT don't count).
+    """Insert annotation/book chunks, flushing every CHUNKS_BATCH_SIZE chunks.
+    Returns the number of rows actually inserted (rows skipped by ON CONFLICT
+    don't count).
     """
-    rows = [
-        (
-            _chunk_hash(chunk),
-            chunk.source_type,
-            chunk.game_id,
-            chunk.source_title,
-            chunk.author,
-            chunk.year,
-            chunk.eco_code,
-            chunk.ply_or_page,
-            chunk.text,
-        )
-        for chunk in chunks
-    ]
-
     chunks_inserted = 0
-    with conn.cursor() as cur:
-        if rows:
-            execute_values(cur, CHUNKS_INSERT, rows)
-            chunks_inserted = cur.rowcount
+    rows: list[tuple] = []
 
-    conn.commit()
+    def flush() -> None:
+        nonlocal chunks_inserted, rows
+        if rows:
+            with conn.cursor() as cur:
+                execute_values(cur, CHUNKS_INSERT, rows, page_size=len(rows))
+                chunks_inserted += cur.rowcount
+        conn.commit()
+        rows = []
+
+    for chunk in chunks:
+        rows.append(
+            (
+                _chunk_hash(chunk),
+                chunk.source_type,
+                chunk.game_id,
+                chunk.source_title,
+                chunk.author,
+                chunk.year,
+                chunk.eco_code,
+                chunk.ply_or_page,
+                chunk.text,
+            )
+        )
+        if len(rows) >= CHUNKS_BATCH_SIZE:
+            flush()
+
+    flush()  # remaining partial batch
     return chunks_inserted
 
 
