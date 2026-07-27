@@ -37,14 +37,15 @@ st.set_page_config(page_title="Chess RAG Assistant", layout="wide")
 # Portfolio demo backed by a personal ChessBase export; keep it out of search
 # engine indexes rather than relying on the URL being merely unlisted.
 # st.markdown's unsafe_allow_html doesn't execute <script> tags (React sets
-# innerHTML), so this goes through components.html's sandboxed iframe, whose
-# window.parent is the same-origin top document.
+# innerHTML), so this goes through components.html's sandboxed iframe instead.
+# That iframe is nested one level inside Streamlit's own app frame, so
+# window.top (not window.parent) is needed to reach the real top document.
 st.components.v1.html(
     """<script>
-    var meta = window.parent.document.createElement('meta');
+    var meta = window.top.document.createElement('meta');
     meta.name = 'robots';
     meta.content = 'noindex, nofollow';
-    window.parent.document.head.appendChild(meta);
+    window.top.document.head.appendChild(meta);
     </script>""",
     height=0,
 )
