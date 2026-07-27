@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+import psycopg2
+
 from src.agent.chess_agent import ask, build_tools
 from src.engine.stockfish_eval import PositionEval
 from src.personalization.similarity import SimilarGame
@@ -9,9 +11,10 @@ from src.search.structured_search import EcoSummary, MoveFrequency, SquareFreque
 
 def _build_tools():
     conn = MagicMock()
+    reconnect = MagicMock()
     engine = MagicMock()
     voyage_client = MagicMock()
-    tools = {t.name: t for t in build_tools(conn, engine, voyage_client)}
+    tools = {t.name: t for t in build_tools(conn, reconnect, engine, voyage_client)}
     return tools, conn, engine, voyage_client
 
 
@@ -27,6 +30,35 @@ def test_get_eco_summary_formats_stats():
     assert "10 games" in result
     assert "White wins 4" in result
     assert "42.5 plies" in result
+
+
+def test_get_eco_summary_reconnects_after_dropped_connection():
+    """tool_runner swallows exceptions raised inside a tool (turns them into
+    a tool_result error) rather than letting them propagate -- so the
+    reconnect-on-drop logic has to live inside the tool call itself, not in
+    whatever calls ask(). This confirms it does.
+    """
+    conn = MagicMock()
+    reconnect = MagicMock()
+    fresh_conn = MagicMock()
+    reconnect.return_value = fresh_conn
+    engine = MagicMock()
+    voyage_client = MagicMock()
+    tools = {t.name: t for t in build_tools(conn, reconnect, engine, voyage_client)}
+
+    summary = EcoSummary(
+        eco_code="C50", game_count=1, white_wins=1, black_wins=0, draws=0, avg_ply_count=40.0
+    )
+    with patch(
+        "src.agent.chess_agent.eco_summary",
+        side_effect=[psycopg2.InterfaceError("connection already closed"), summary],
+    ) as mock_fn:
+        result = tools["get_eco_summary"]("C50")
+
+    reconnect.assert_called_once()
+    assert mock_fn.call_args_list[0].args[0] is conn
+    assert mock_fn.call_args_list[1].args[0] is fresh_conn
+    assert "1 games" in result
 
 
 def test_get_eco_summary_reports_no_games():
@@ -173,7 +205,7 @@ def test_ask_returns_text_from_final_message_only():
     client = MagicMock()
     client.beta.messages.tool_runner.return_value = [early_message, final_message]
 
-    result = ask("some question", MagicMock(), MagicMock(), MagicMock(), client=client)
+    result = ask("some question", MagicMock(), MagicMock(), MagicMock(), MagicMock(), client=client)
 
     assert result == "The answer is 42."
     call_kwargs = client.beta.messages.tool_runner.call_args.kwargs
@@ -186,6 +218,6 @@ def test_ask_returns_empty_string_when_no_messages_yielded():
     client = MagicMock()
     client.beta.messages.tool_runner.return_value = []
 
-    result = ask("some question", MagicMock(), MagicMock(), MagicMock(), client=client)
+    result = ask("some question", MagicMock(), MagicMock(), MagicMock(), MagicMock(), client=client)
 
     assert result == ""

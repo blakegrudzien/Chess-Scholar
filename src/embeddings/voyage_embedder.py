@@ -69,10 +69,12 @@ def embed_pending_chunks(
 
     Holds one connection across the whole job (reconnecting per batch was
     tried and made every batch ~3x slower -- Neon's per-connection setup
-    cost dominates). On a psycopg2.OperationalError (observed in practice:
-    Neon closed a long-lived idle connection mid-job), reconnect and retry.
-    On a transient Voyage API error (observed in practice: a 10-minute read
-    timeout), back off briefly and retry without touching the DB connection.
+    cost dominates). On a dropped connection (observed in practice: Neon
+    closed a long-lived idle connection mid-job, raised as either
+    OperationalError or InterfaceError depending on which the client
+    detected it), reconnect and retry. On a transient Voyage API error
+    (observed in practice: a 10-minute read timeout), back off briefly and
+    retry without touching the DB connection.
     Either way the failed batch was never committed, so it's safe to just
     loop again. Gives up after `max_consecutive_failures` in a row so a
     truly broken connection or API outage fails loudly instead of spinning
@@ -125,9 +127,11 @@ def embed_pending_chunks(
                     f"total={total_embedded}",
                     flush=True,
                 )
-            except psycopg2.OperationalError as exc:
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as exc:
                 consecutive_failures += 1
-                print(f"OperationalError (consecutive={consecutive_failures}): {exc}", flush=True)
+                print(
+                    f"{type(exc).__name__} (consecutive={consecutive_failures}): {exc}", flush=True
+                )
                 if consecutive_failures > max_consecutive_failures:
                     raise
                 conn.close()

@@ -48,14 +48,33 @@ opening-profile question). Be direct about which tool(s) you used.
 """
 
 
+DB_RETRYABLE_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
+
+
 def build_tools(
     conn: psycopg2.extensions.connection,
+    reconnect: Callable[[], psycopg2.extensions.connection],
     engine: chess.engine.SimpleEngine,
     voyage_client: voyageai.Client,
 ) -> list[Callable]:
     """Build the tool functions for one session, bound to the given DB
     connection, Stockfish engine, and Voyage client.
+
+    `reconnect` must return a fresh, live connection -- called if `conn` turns
+    out to be dead (Neon closes idle connections in practice). This has to be
+    handled *inside* each tool, not by the caller of `ask()`: the Anthropic
+    SDK's tool_runner catches every exception a tool raises and turns it into
+    a tool_result error sent back to the model, so a raised psycopg2 error
+    never reaches the caller of `ask()` to trigger a reconnect there.
     """
+    conn_box = [conn]
+
+    def _query(fn: Callable, *args, **kwargs):
+        try:
+            return fn(conn_box[0], *args, **kwargs)
+        except DB_RETRYABLE_ERRORS:
+            conn_box[0] = reconnect()
+            return fn(conn_box[0], *args, **kwargs)
 
     @beta_tool
     def get_eco_summary(eco_code: str) -> str:
@@ -65,7 +84,7 @@ def build_tools(
         Args:
             eco_code: ECO opening code, e.g. "C50", "D12", "B90".
         """
-        summary = eco_summary(conn, eco_code)
+        summary = _query(eco_summary, eco_code)
         if summary.game_count == 0:
             return f"No games found for ECO {eco_code}."
         return (
@@ -89,7 +108,9 @@ def build_tools(
             max_ply: How many half-moves into the game to consider. Defaults to 20.
         """
         try:
-            results = piece_placement_frequency(conn, eco_code, piece, color=color, max_ply=max_ply)
+            results = _query(
+                piece_placement_frequency, eco_code, piece, color=color, max_ply=max_ply
+            )
         except ValueError as exc:
             return f"Invalid input: {exc}"
         if not results:
@@ -106,7 +127,7 @@ def build_tools(
             ply: Half-move number (1 = White's 1st move, 2 = Black's 1st move, etc.)
             limit: Max number of moves to return. Defaults to 5.
         """
-        results = common_moves_at_ply(conn, eco_code, ply, limit=limit)
+        results = _query(common_moves_at_ply, eco_code, ply, limit=limit)
         if not results:
             return f"No data at ply {ply} for ECO {eco_code}."
         return "; ".join(f"{r.move_san} ({r.count}x)" for r in results)
@@ -120,7 +141,7 @@ def build_tools(
             query: Natural-language description of the idea or concept to search for.
             limit: Max number of results. Defaults to 5.
         """
-        results = search_chunks(conn, voyage_client, query, limit=limit)
+        results = _query(search_chunks, voyage_client, query, limit=limit)
         if not results:
             return "No relevant annotations found."
         return "\n".join(f"- {r.text}" for r in results)
@@ -163,7 +184,7 @@ def build_tools(
             limit: Max number of similar games to return. Defaults to 5.
         """
         try:
-            results = _find_similar_games(conn, moves, max_ply=max_ply, limit=limit)
+            results = _query(_find_similar_games, moves, max_ply=max_ply, limit=limit)
         except ValueError as exc:
             return f"Invalid input: {exc}"
         if not results:
@@ -187,6 +208,7 @@ def build_tools(
 def ask(
     question: str,
     conn: psycopg2.extensions.connection,
+    reconnect: Callable[[], psycopg2.extensions.connection],
     engine: chess.engine.SimpleEngine,
     voyage_client: voyageai.Client,
     client: anthropic.Anthropic | None = None,
@@ -195,7 +217,7 @@ def ask(
     Returns the final response text.
     """
     client = client or anthropic.Anthropic()
-    tools = build_tools(conn, engine, voyage_client)
+    tools = build_tools(conn, reconnect, engine, voyage_client)
 
     runner = client.beta.messages.tool_runner(
         model=MODEL,

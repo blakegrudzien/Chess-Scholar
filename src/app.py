@@ -56,6 +56,19 @@ def _get_db_conn() -> psycopg2.extensions.connection:
     return get_connection()
 
 
+def _reconnect_db() -> psycopg2.extensions.connection:
+    """Force a fresh DB connection, replacing the cached (process-wide) one.
+
+    Passed into the agent as its reconnect callback: the Anthropic SDK's
+    tool_runner catches every exception a tool raises and turns it into a
+    tool_result error sent back to the model, so a dropped connection never
+    reaches this module to trigger a retry here -- the reconnect has to
+    happen inside the tool call itself (see build_tools in chess_agent.py).
+    """
+    _get_db_conn.clear()
+    return _get_db_conn()
+
+
 @st.cache_resource
 def _get_engine() -> chess.engine.SimpleEngine:
     return chess.engine.SimpleEngine.popen_uci(get_engine_path())
@@ -72,18 +85,14 @@ def _get_anthropic_client() -> anthropic.Anthropic:
 
 
 def ask_agent(question: str) -> str:
-    """Ask the agent, retrying once with a fresh DB connection if the cached
-    one was dropped (Neon has closed idle connections in practice -- see
-    src/embeddings/voyage_embedder.py for the same pattern).
-    """
-    engine = _get_engine()
-    voyage_client = _get_voyage()
-    client = _get_anthropic_client()
-    try:
-        return ask(question, _get_db_conn(), engine, voyage_client, client=client)
-    except psycopg2.OperationalError:
-        _get_db_conn.clear()
-        return ask(question, _get_db_conn(), engine, voyage_client, client=client)
+    return ask(
+        question,
+        _get_db_conn(),
+        _reconnect_db,
+        _get_engine(),
+        _get_voyage(),
+        client=_get_anthropic_client(),
+    )
 
 
 def render_chat_tab() -> None:
