@@ -30,8 +30,10 @@ Also supported, no new infra:
   live shareable demo link, not just local.
 - **LLM**: Anthropic Claude Sonnet 5 (`claude-sonnet-5`) as primary via native tool
   use / function calling. OpenAI is an acceptable fallback adapter, not primary.
-- **Embeddings**: OpenAI `text-embedding-3-small` (Anthropic has no first-party
-  embedding model). Use Batch API for full-corpus runs, real-time during dev.
+- **Embeddings**: Voyage AI `voyage-4` (Anthropic's recommended embeddings
+  partner; Anthropic has no first-party embedding model). 1024-dim vectors —
+  `chunks.embedding` is `VECTOR(1024)`. 200M free tokens/model covers this
+  corpus; batch requests (up to 128 texts/call) during full-corpus runs.
 - **RAG orchestration**: raw SQL + API calls, NOT LangChain/LlamaIndex — deliberately,
   so every step is explainable in an interview without hiding behind a framework.
 - **Frontend**: Streamlit.

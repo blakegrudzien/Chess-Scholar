@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     eco_code TEXT,
     ply_or_page TEXT,
     text TEXT NOT NULL,
-    embedding VECTOR(1536)
+    embedding VECTOR(1024)  -- voyage-4 / voyage-4-lite default dimension
 );
 
 CREATE TABLE IF NOT EXISTS opening_notes (

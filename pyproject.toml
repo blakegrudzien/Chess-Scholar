@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "python-chess>=1.999",
     "anthropic>=0.40",
-    "openai>=1.50",           # used for embeddings only (text-embedding-3-small)
+    "voyageai>=0.3",          # embeddings (Anthropic's recommended partner; no first-party model)
     "psycopg2-binary>=2.9",
     "sqlalchemy>=2.0",
     "pgvector>=0.3",
