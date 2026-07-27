@@ -1,0 +1,9 @@
+python-chess>=1.999
+anthropic>=0.40
+voyageai>=0.3
+psycopg2-binary>=2.9
+sqlalchemy>=2.0
+pgvector>=0.3
+streamlit>=1.38
+python-dotenv>=1.0
+pydantic>=2.8

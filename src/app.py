@@ -34,6 +34,21 @@ from src.ingestion.pgn_parser import parse_pgn  # noqa: E402
 
 st.set_page_config(page_title="Chess RAG Assistant", layout="wide")
 
+# Portfolio demo backed by a personal ChessBase export; keep it out of search
+# engine indexes rather than relying on the URL being merely unlisted.
+# st.markdown's unsafe_allow_html doesn't execute <script> tags (React sets
+# innerHTML), so this goes through components.html's sandboxed iframe, whose
+# window.parent is the same-origin top document.
+st.components.v1.html(
+    """<script>
+    var meta = window.parent.document.createElement('meta');
+    meta.name = 'robots';
+    meta.content = 'noindex, nofollow';
+    window.parent.document.head.appendChild(meta);
+    </script>""",
+    height=0,
+)
+
 
 @st.cache_resource
 def _get_db_conn() -> psycopg2.extensions.connection:

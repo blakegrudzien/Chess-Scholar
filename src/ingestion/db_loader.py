@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import os
 from collections.abc import Iterable
+from urllib.parse import urlparse
 
 import psycopg2
 import psycopg2.extensions
@@ -59,7 +60,15 @@ CHUNKS_BATCH_SIZE = 5000  # chunks per flush
 def get_connection() -> psycopg2.extensions.connection:
     load_dotenv()
     database_url = os.environ["DATABASE_URL"]
-    return psycopg2.connect(database_url)
+    connect_kwargs = {}
+    hostname = urlparse(database_url).hostname or ""
+    if hostname.endswith(".neon.tech"):
+        # psycopg2-binary's bundled libpq predates Neon's SNI-based routing,
+        # so the endpoint ID must be passed explicitly or connections fail
+        # with "Endpoint ID is not specified". See https://neon.tech/sni
+        endpoint = hostname.split(".", 1)[0]
+        connect_kwargs["options"] = f"endpoint={endpoint}"
+    return psycopg2.connect(database_url, **connect_kwargs)
 
 
 def load_games(
