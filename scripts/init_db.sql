@@ -55,6 +55,10 @@ CREATE INDEX IF NOT EXISTS idx_games_year ON games(year);
 CREATE INDEX IF NOT EXISTS idx_moves_piece_tosq ON moves(piece, to_sq);
 CREATE INDEX IF NOT EXISTS idx_moves_capture ON moves(is_capture) WHERE is_capture = true;
 
+-- Index for Layer 4 structural similarity (matches moves against a target
+-- opening prefix by ply across all games, not scoped to one game_id)
+CREATE INDEX IF NOT EXISTS idx_moves_ply_san ON moves(ply, move_san);
+
 -- Index for Layer 2 vector search (IVFFlat; fine for a few thousand-tens of thousands of chunks)
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks USING ivfflat (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_chunks_year ON chunks(year);
