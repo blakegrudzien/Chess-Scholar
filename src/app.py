@@ -21,16 +21,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import anthropic  # noqa: E402
 import chess  # noqa: E402
-import chess.engine  # noqa: E402
 import chess.svg  # noqa: E402
-import psycopg2  # noqa: E402
+import psycopg2.pool  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from src.agent.chess_agent import ask  # noqa: E402
 from src.embeddings.voyage_embedder import get_voyage_client  # noqa: E402
+from src.engine.engine_pool import EnginePool  # noqa: E402
 from src.engine.stockfish_eval import get_engine_path  # noqa: E402
-from src.ingestion.db_loader import get_connection  # noqa: E402
+from src.ingestion.db_loader import get_connection_pool  # noqa: E402
 from src.ingestion.pgn_parser import parse_pgn  # noqa: E402
+
+# CPU-bound: each concurrent evaluation pins a core for the search duration,
+# so this is sized to the deployment's compute, not to how many users we'd
+# like to serve. Bump alongside the hosting tier, not in isolation.
+ENGINE_POOL_SIZE = 2
 
 st.set_page_config(page_title="Chess RAG Assistant", layout="wide")
 
@@ -52,26 +57,13 @@ st.components.v1.html(
 
 
 @st.cache_resource
-def _get_db_conn() -> psycopg2.extensions.connection:
-    return get_connection()
-
-
-def _reconnect_db() -> psycopg2.extensions.connection:
-    """Force a fresh DB connection, replacing the cached (process-wide) one.
-
-    Passed into the agent as its reconnect callback: the Anthropic SDK's
-    tool_runner catches every exception a tool raises and turns it into a
-    tool_result error sent back to the model, so a dropped connection never
-    reaches this module to trigger a retry here -- the reconnect has to
-    happen inside the tool call itself (see build_tools in chess_agent.py).
-    """
-    _get_db_conn.clear()
-    return _get_db_conn()
+def _get_db_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    return get_connection_pool()
 
 
 @st.cache_resource
-def _get_engine() -> chess.engine.SimpleEngine:
-    return chess.engine.SimpleEngine.popen_uci(get_engine_path())
+def _get_engine_pool() -> EnginePool:
+    return EnginePool(get_engine_path(), size=ENGINE_POOL_SIZE)
 
 
 @st.cache_resource
@@ -87,9 +79,8 @@ def _get_anthropic_client() -> anthropic.Anthropic:
 def ask_agent(question: str) -> str:
     return ask(
         question,
-        _get_db_conn(),
-        _reconnect_db,
-        _get_engine(),
+        _get_db_pool(),
+        _get_engine_pool(),
         _get_voyage(),
         client=_get_anthropic_client(),
     )

@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 
 import psycopg2
 import psycopg2.extensions
+import psycopg2.pool
 from dotenv import load_dotenv
 from psycopg2.extras import execute_values
 
@@ -57,18 +58,36 @@ GAMES_BATCH_SIZE = 500  # games per flush (also bounds moves held in memory at o
 CHUNKS_BATCH_SIZE = 5000  # chunks per flush
 
 
+def _neon_connect_kwargs(database_url: str) -> dict[str, str]:
+    hostname = urlparse(database_url).hostname or ""
+    if not hostname.endswith(".neon.tech"):
+        return {}
+    # psycopg2-binary's bundled libpq predates Neon's SNI-based routing, so
+    # the endpoint ID must be passed explicitly or connections fail with
+    # "Endpoint ID is not specified". See https://neon.tech/sni
+    endpoint = hostname.split(".", 1)[0]
+    return {"options": f"endpoint={endpoint}"}
+
+
 def get_connection() -> psycopg2.extensions.connection:
     load_dotenv()
     database_url = os.environ["DATABASE_URL"]
-    connect_kwargs = {}
-    hostname = urlparse(database_url).hostname or ""
-    if hostname.endswith(".neon.tech"):
-        # psycopg2-binary's bundled libpq predates Neon's SNI-based routing,
-        # so the endpoint ID must be passed explicitly or connections fail
-        # with "Endpoint ID is not specified". See https://neon.tech/sni
-        endpoint = hostname.split(".", 1)[0]
-        connect_kwargs["options"] = f"endpoint={endpoint}"
-    return psycopg2.connect(database_url, **connect_kwargs)
+    return psycopg2.connect(database_url, **_neon_connect_kwargs(database_url))
+
+
+# Sized for a handful of concurrent Streamlit sessions. DB round-trips here
+# are fast (indexed lookups), so this pool exists to stop concurrent sessions
+# serializing on one shared connection -- not because queries are slow.
+DB_POOL_MIN_CONN = 2
+DB_POOL_MAX_CONN = 10
+
+
+def get_connection_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    load_dotenv()
+    database_url = os.environ["DATABASE_URL"]
+    return psycopg2.pool.ThreadedConnectionPool(
+        DB_POOL_MIN_CONN, DB_POOL_MAX_CONN, database_url, **_neon_connect_kwargs(database_url)
+    )
 
 
 def load_games(

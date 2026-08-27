@@ -10,11 +10,11 @@ from collections.abc import Callable
 
 import anthropic
 import chess
-import chess.engine
-import psycopg2.extensions
+import psycopg2.pool
 import voyageai
 from anthropic import beta_tool
 
+from src.engine.engine_pool import EngineBusyError, EnginePool
 from src.engine.stockfish_eval import evaluate_position
 from src.personalization.similarity import find_similar_games as _find_similar_games
 from src.rag.vector_search import search_chunks
@@ -52,29 +52,33 @@ DB_RETRYABLE_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
 
 
 def build_tools(
-    conn: psycopg2.extensions.connection,
-    reconnect: Callable[[], psycopg2.extensions.connection],
-    engine: chess.engine.SimpleEngine,
+    db_pool: psycopg2.pool.ThreadedConnectionPool,
+    engine_pool: EnginePool,
     voyage_client: voyageai.Client,
 ) -> list[Callable]:
-    """Build the tool functions for one session, bound to the given DB
-    connection, Stockfish engine, and Voyage client.
+    """Build the tool functions for one session, bound to the given DB pool,
+    Stockfish engine pool, and Voyage client.
 
-    `reconnect` must return a fresh, live connection -- called if `conn` turns
-    out to be dead (Neon closes idle connections in practice). This has to be
-    handled *inside* each tool, not by the caller of `ask()`: the Anthropic
-    SDK's tool_runner catches every exception a tool raises and turns it into
-    a tool_result error sent back to the model, so a raised psycopg2 error
-    never reaches the caller of `ask()` to trigger a reconnect there.
+    A connection is checked out of `db_pool` for the duration of each tool
+    call and returned afterward -- concurrent sessions no longer share one
+    connection. On a dead connection (Neon closes idle connections in
+    practice), the pool discards it and hands back a fresh one, all inside
+    the tool call: the Anthropic SDK's tool_runner catches every exception a
+    tool raises and turns it into a tool_result error sent back to the model,
+    so a raised psycopg2 error never reaches the caller of `ask()` to trigger
+    a retry there.
     """
-    conn_box = [conn]
 
     def _query(fn: Callable, *args, **kwargs):
+        conn = db_pool.getconn()
         try:
-            return fn(conn_box[0], *args, **kwargs)
+            return fn(conn, *args, **kwargs)
         except DB_RETRYABLE_ERRORS:
-            conn_box[0] = reconnect()
-            return fn(conn_box[0], *args, **kwargs)
+            db_pool.putconn(conn, close=True)
+            conn = db_pool.getconn()
+            return fn(conn, *args, **kwargs)
+        finally:
+            db_pool.putconn(conn)
 
     @beta_tool
     def get_eco_summary(eco_code: str) -> str:
@@ -159,7 +163,11 @@ def build_tools(
             board = chess.Board(fen)
         except ValueError as exc:
             return f"Invalid FEN: {exc}"
-        result = evaluate_position(engine, board, depth=depth)
+        try:
+            with engine_pool.checkout() as engine:
+                result = evaluate_position(engine, board, depth=depth)
+        except EngineBusyError as exc:
+            return str(exc)
         if result.mate_in is not None:
             return (
                 f"Mate in {result.mate_in}. Best move: {result.best_move_san}. "
@@ -207,9 +215,8 @@ def build_tools(
 
 def ask(
     question: str,
-    conn: psycopg2.extensions.connection,
-    reconnect: Callable[[], psycopg2.extensions.connection],
-    engine: chess.engine.SimpleEngine,
+    db_pool: psycopg2.pool.ThreadedConnectionPool,
+    engine_pool: EnginePool,
     voyage_client: voyageai.Client,
     client: anthropic.Anthropic | None = None,
 ) -> str:
@@ -217,7 +224,7 @@ def ask(
     Returns the final response text.
     """
     client = client or anthropic.Anthropic()
-    tools = build_tools(conn, reconnect, engine, voyage_client)
+    tools = build_tools(db_pool, engine_pool, voyage_client)
 
     runner = client.beta.messages.tool_runner(
         model=MODEL,
