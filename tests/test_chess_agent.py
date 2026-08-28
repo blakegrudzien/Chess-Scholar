@@ -225,20 +225,47 @@ def test_find_similar_corpus_games_surfaces_invalid_input():
     assert "Invalid input" in result
 
 
+def _tool_use_block(name: str) -> MagicMock:
+    # MagicMock(name=...) is reserved by unittest.mock for the mock's own
+    # repr, not for setting a real .name attribute -- has to be set after
+    # construction, or block.name silently returns the internal mock name.
+    block = MagicMock(type="tool_use")
+    block.name = name
+    return block
+
+
+def _stream_turn(content_blocks: list, chunks: list[str] | None = None) -> MagicMock:
+    """Build a mock stream-shaped turn matching what ask() consumes with
+    stream=True: text_stream yields chunks as they arrive, get_final_message
+    returns the complete message once the stream is drained.
+
+    Defaults chunks to the joined text of content_blocks as one chunk, for
+    tests that only care about the final assembled text, not incremental
+    delivery.
+    """
+    if chunks is None:
+        chunks = ["".join(block.text for block in content_blocks if block.type == "text")]
+    turn = MagicMock()
+    turn.text_stream = iter(chunks)
+    message = MagicMock()
+    message.content = content_blocks
+    turn.get_final_message.return_value = message
+    return turn
+
+
 def test_ask_returns_text_from_final_message_only():
-    early_message = MagicMock()
-    early_message.content = [MagicMock(type="text", text="Let me check...")]
-    final_message = MagicMock()
-    final_message.content = [MagicMock(type="text", text="The answer is 42.")]
+    early_turn = _stream_turn([MagicMock(type="text", text="Let me check...")])
+    final_turn = _stream_turn([MagicMock(type="text", text="The answer is 42.")])
 
     client = MagicMock()
-    client.beta.messages.tool_runner.return_value = [early_message, final_message]
+    client.beta.messages.tool_runner.return_value = [early_turn, final_turn]
 
     result = ask("some question", MagicMock(), MagicMock(), MagicMock(), client=client)
 
     assert result == "The answer is 42."
     call_kwargs = client.beta.messages.tool_runner.call_args.kwargs
     assert call_kwargs["model"] == "claude-sonnet-5"
+    assert call_kwargs["stream"] is True
     assert len(call_kwargs["tools"]) == 6
     assert call_kwargs["messages"] == [{"role": "user", "content": "some question"}]
 
@@ -252,26 +279,17 @@ def test_ask_returns_empty_string_when_no_messages_yielded():
     assert result == ""
 
 
-def _tool_use_block(name: str) -> MagicMock:
-    # MagicMock(name=...) is reserved by unittest.mock for the mock's own
-    # repr, not for setting a real .name attribute -- has to be set after
-    # construction, or `block.name` silently returns the internal mock name.
-    block = MagicMock(type="tool_use")
-    block.name = name
-    return block
-
-
 def test_ask_reports_model_rationale_via_on_step():
-    tool_turn = MagicMock()
-    tool_turn.content = [
-        MagicMock(type="text", text="Checking Layer 2 for strategic ideas."),
-        _tool_use_block("search_annotations"),
-    ]
-    final_message = MagicMock()
-    final_message.content = [MagicMock(type="text", text="Final answer.")]
+    tool_turn = _stream_turn(
+        [
+            MagicMock(type="text", text="Checking Layer 2 for strategic ideas."),
+            _tool_use_block("search_annotations"),
+        ]
+    )
+    final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
 
     client = MagicMock()
-    client.beta.messages.tool_runner.return_value = [tool_turn, final_message]
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_turn]
 
     steps = []
     result = ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_step=steps.append)
@@ -281,13 +299,11 @@ def test_ask_reports_model_rationale_via_on_step():
 
 
 def test_ask_falls_back_to_tool_label_when_model_gives_no_rationale():
-    tool_turn = MagicMock()
-    tool_turn.content = [_tool_use_block("evaluate_chess_position")]
-    final_message = MagicMock()
-    final_message.content = [MagicMock(type="text", text="Final answer.")]
+    tool_turn = _stream_turn([_tool_use_block("evaluate_chess_position")])
+    final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
 
     client = MagicMock()
-    client.beta.messages.tool_runner.return_value = [tool_turn, final_message]
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_turn]
 
     steps = []
     ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_step=steps.append)
@@ -296,16 +312,16 @@ def test_ask_falls_back_to_tool_label_when_model_gives_no_rationale():
 
 
 def test_ask_joins_fallback_labels_for_multiple_tools_with_no_rationale():
-    tool_turn = MagicMock()
-    tool_turn.content = [
-        _tool_use_block("get_eco_summary"),
-        _tool_use_block("search_annotations"),
-    ]
-    final_message = MagicMock()
-    final_message.content = [MagicMock(type="text", text="Final answer.")]
+    tool_turn = _stream_turn(
+        [
+            _tool_use_block("get_eco_summary"),
+            _tool_use_block("search_annotations"),
+        ]
+    )
+    final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
 
     client = MagicMock()
-    client.beta.messages.tool_runner.return_value = [tool_turn, final_message]
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_turn]
 
     steps = []
     ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_step=steps.append)
@@ -314,11 +330,10 @@ def test_ask_joins_fallback_labels_for_multiple_tools_with_no_rationale():
 
 
 def test_ask_does_not_call_on_step_for_a_text_only_turn():
-    final_message = MagicMock()
-    final_message.content = [MagicMock(type="text", text="Final answer.")]
+    final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
 
     client = MagicMock()
-    client.beta.messages.tool_runner.return_value = [final_message]
+    client.beta.messages.tool_runner.return_value = [final_turn]
 
     steps = []
     ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_step=steps.append)
@@ -327,17 +342,35 @@ def test_ask_does_not_call_on_step_for_a_text_only_turn():
 
 
 def test_ask_without_on_step_does_not_error_on_a_tool_call_turn():
-    tool_turn = MagicMock()
-    tool_turn.content = [_tool_use_block("search_annotations")]
-    final_message = MagicMock()
-    final_message.content = [MagicMock(type="text", text="Final answer.")]
+    tool_turn = _stream_turn([_tool_use_block("search_annotations")])
+    final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
 
     client = MagicMock()
-    client.beta.messages.tool_runner.return_value = [tool_turn, final_message]
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_turn]
 
     result = ask("q", MagicMock(), MagicMock(), MagicMock(), client=client)
 
     assert result == "Final answer."
+
+
+def test_ask_calls_on_chunk_for_every_turn_in_order():
+    tool_turn = _stream_turn(
+        [MagicMock(type="text", text="Checking Layer 2."), _tool_use_block("search_annotations")],
+        chunks=["Checking ", "Layer 2."],
+    )
+    final_turn = _stream_turn(
+        [MagicMock(type="text", text="The answer.")],
+        chunks=["The ", "answer."],
+    )
+
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_turn]
+
+    chunks = []
+    result = ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_chunk=chunks.append)
+
+    assert result == "The answer."
+    assert chunks == ["Checking ", "Layer 2.", "The ", "answer."]
 
 
 def test_tool_labels_cover_every_tool():

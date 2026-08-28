@@ -11,8 +11,10 @@ Known reliability caveats (see CLAUDE.md) surfaced directly in the UI:
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # `streamlit run src/app.py` puts src/ itself on sys.path, not the project
@@ -36,6 +38,15 @@ from src.ingestion.pgn_parser import parse_pgn  # noqa: E402
 # so this is sized to the deployment's compute, not to how many users we'd
 # like to serve. Bump alongside the hosting tier, not in isolation.
 ENGINE_POOL_SIZE = 2
+
+# Anthropic's raw text deltas arrive in relatively large pieces (a clause or
+# sentence at a time), not the smooth word-by-word reveal seen in Claude.ai
+# or ChatGPT -- that reveal is a client-side pacing effect, not a property
+# of the network chunks. This regex re-splits each delta into word-sized
+# pieces (including leading and trailing whitespace, so pieces concatenate
+# back to the exact original text) so it can be paced the same way.
+_WORD_SPLIT_RE = re.compile(r"\s*\S+\s*")
+STREAM_WORD_DELAY_SECONDS = 0.02
 
 st.set_page_config(page_title="Chess RAG Assistant", layout="wide")
 
@@ -76,7 +87,7 @@ def _get_anthropic_client() -> anthropic.Anthropic:
     return anthropic.Anthropic()
 
 
-def ask_agent(question: str, on_step=None) -> str:
+def ask_agent(question: str, on_step=None, on_chunk=None) -> str:
     return ask(
         question,
         _get_db_pool(),
@@ -84,18 +95,62 @@ def ask_agent(question: str, on_step=None) -> str:
         _get_voyage(),
         client=_get_anthropic_client(),
         on_step=on_step,
+        on_chunk=on_chunk,
     )
 
 
 def _ask_with_status(question: str) -> str:
     """Run ask_agent, showing each tool-calling step live in an st.status
-    panel instead of a blank spinner -- a full answer can take several
-    sequential model round trips, so this both demonstrates the agent's
-    layer routing and gives the wait something to look at.
+    panel and streaming the final answer into view as it is generated,
+    rather than a blank spinner followed by the whole answer appearing at
+    once. Renders the final answer itself, so callers should not render
+    `answer` again afterward.
+
+    A tool-calling turn and the final answer both start with plain text
+    (the system prompt asks for a one-sentence rationale before every tool
+    call), and the only way to tell them apart is whether a tool_use block
+    shows up by the end of that turn -- so every turn's text streams into
+    answer_area first. If the turn turns out to have called a tool, that
+    text becomes the status line and answer_area is cleared for the next
+    turn; if not, it was the final answer, already fully displayed by the
+    time this returns.
+
+    Each delta is re-split into word-sized pieces and revealed one at a
+    time with a short pause between them (see STREAM_WORD_DELAY_SECONDS),
+    rather than written all at once -- the raw deltas from the API arrive
+    in clause-or-sentence-sized pieces, so writing them straight through
+    looks like it is appearing in chunks rather than being typed. This adds
+    a small amount of wall-clock time to how long the last word takes to
+    appear, in exchange for text appearing continuously throughout instead
+    of in a few jumps.
+
+    The stop button doesn't need explicit click handling: Streamlit treats
+    interactions as implicit yield points during a running script, so any
+    click while this is in progress interrupts it at the next word reveal.
     """
-    with st.status("Thinking...", expanded=True) as status:
-        answer = ask_agent(question, on_step=status.write)
-        status.update(label="Done", state="complete", expanded=False)
+    status = st.status("Thinking...", expanded=True)
+    stop_placeholder = st.empty()
+    stop_placeholder.button("Stop generating", key="stop_generating")
+    answer_area = st.empty()
+
+    accumulated = [""]
+
+    def on_chunk(delta: str) -> None:
+        pieces = _WORD_SPLIT_RE.findall(delta) or [delta]
+        for piece in pieces:
+            accumulated[0] += piece
+            answer_area.markdown(accumulated[0])
+            time.sleep(STREAM_WORD_DELAY_SECONDS)
+
+    def on_step(text: str) -> None:
+        status.write(text)
+        accumulated[0] = ""
+        answer_area.empty()
+
+    answer = ask_agent(question, on_step=on_step, on_chunk=on_chunk)
+
+    status.update(label="Done", state="complete", expanded=False)
+    stop_placeholder.empty()
     return answer
 
 
@@ -118,7 +173,6 @@ def render_chat_tab() -> None:
             st.markdown(question)
         with st.chat_message("assistant"):
             answer = _ask_with_status(question)
-            st.markdown(answer)
         st.session_state.chat_history.append(("assistant", answer))
 
 
@@ -195,11 +249,10 @@ def render_board_tab() -> None:
 
     st.divider()
     if st.button("Evaluate this position with Stockfish"):
-        answer = _ask_with_status(
+        _ask_with_status(
             f"Evaluate this chess position and tell me the best move: {board.fen()}. "
             "Use the engine, don't just guess."
         )
-        st.markdown(answer)
 
 
 def render_pgn_upload_tab() -> None:
@@ -235,8 +288,7 @@ def render_pgn_upload_tab() -> None:
             f"{', '.join(move_sans)}. Find similar games in the corpus and give me "
             "an illustrative comparison."
         )
-        answer = _ask_with_status(question)
-        st.markdown(answer)
+        _ask_with_status(question)
 
 
 def main() -> None:

@@ -69,9 +69,12 @@ def _fake_client(fen: str) -> MagicMock:
     def fake_tool_runner(*, tools, **kwargs):
         by_name = {t.name: t for t in tools}
         result_text = by_name["evaluate_chess_position"](fen)
+        turn = MagicMock()
+        turn.text_stream = iter([result_text])
         message = MagicMock()
         message.content = [MagicMock(type="text", text=result_text)]
-        return [message]
+        turn.get_final_message.return_value = message
+        return [turn]
 
     client.beta.messages.tool_runner.side_effect = fake_tool_runner
     return client

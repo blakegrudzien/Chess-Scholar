@@ -54,14 +54,14 @@ write it as a standalone status update, not as part of your eventual answer.
 
 # Fallback status text per tool, shown if a turn's tool call arrives with no
 # accompanying sentence from the model (see _report_tool_steps). Doubles as
-# a human-readable label for which of the four layers each tool belongs to.
+# a human readable label for which of the four layers each tool belongs to.
 TOOL_LABELS: dict[str, str] = {
-    "get_eco_summary": "📊 Layer 1 (structured search) -- pulling opening statistics.",
-    "get_piece_placement": "📊 Layer 1 (structured search) -- checking piece placement frequency.",
-    "get_common_moves_at_ply": "📊 Layer 1 (structured search) -- checking common moves.",
-    "search_annotations": "🔎 Layer 2 (semantic search) -- searching commentary and book text.",
-    "evaluate_chess_position": "♟️ Layer 3 (Stockfish) -- evaluating the position.",
-    "find_similar_corpus_games": "🔁 Layer 4 (similarity search) -- comparing against the corpus.",
+    "get_eco_summary": "Layer 1 (structured search): pulling opening statistics.",
+    "get_piece_placement": "Layer 1 (structured search): checking piece placement frequency.",
+    "get_common_moves_at_ply": "Layer 1 (structured search): checking common moves.",
+    "search_annotations": "Layer 2 (semantic search): searching commentary and book text.",
+    "evaluate_chess_position": "Layer 3 (Stockfish): evaluating the position.",
+    "find_similar_corpus_games": "Layer 4 (similarity search): comparing against the corpus.",
 }
 
 
@@ -253,6 +253,7 @@ def ask(
     voyage_client: voyageai.Client,
     client: anthropic.Anthropic | None = None,
     on_step: Callable[[str], None] | None = None,
+    on_chunk: Callable[[str], None] | None = None,
 ) -> str:
     """Answer one question, routing across the four layers via tool-calling.
     Returns the final response text.
@@ -262,6 +263,15 @@ def ask(
     and why -- meant for a caller to show live while the request is in
     flight, since a full answer can take several sequential tool-calling
     round trips.
+
+    If `on_chunk` is given, it's called with each raw text delta as it
+    streams in, for every turn, not only the final one. There's no way to
+    know in advance whether a given turn will turn out to be the final
+    answer or a tool-calling turn's one-sentence rationale, since the
+    tool_use block (if any) only appears once the turn completes -- so
+    on_chunk fires for both, and a caller distinguishes them after the fact:
+    on_step firing for a turn means its chunks were the rationale, not the
+    final answer.
     """
     client = client or anthropic.Anthropic()
     tools = build_tools(db_pool, engine_pool, voyage_client)
@@ -272,14 +282,17 @@ def ask(
         system=SYSTEM_PROMPT,
         tools=tools,
         messages=[{"role": "user", "content": question}],
+        stream=True,
     )
 
-    last_message = None
-    for message in runner:
-        last_message = message
+    final_text = ""
+    for turn in runner:
+        for delta in turn.text_stream:
+            if on_chunk is not None:
+                on_chunk(delta)
+        message = turn.get_final_message()
         if on_step is not None:
             _report_tool_steps(message, on_step)
+        final_text = "".join(block.text for block in message.content if block.type == "text")
 
-    if last_message is None:
-        return ""
-    return "".join(block.text for block in last_message.content if block.type == "text")
+    return final_text
