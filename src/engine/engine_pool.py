@@ -1,13 +1,12 @@
-"""A small, fixed-size pool of Stockfish engine subprocesses so concurrent
-users' evaluations run in parallel instead of queuing behind one shared
-engine (see tests/test_concurrency.py).
+"""A small, fixed-size pool of Stockfish engine subprocesses, so that
+concurrent evaluation requests get genuine parallelism instead of queuing
+behind one shared engine process. See tests/test_concurrency.py.
 
-Unlike a DB connection pool, checkout here never blocks: each engine is
-CPU-bound for the duration of a search, so making a caller wait for one to
-free up would just recreate the same serialization this pool exists to fix.
-When every engine is checked out, checkout() raises EngineBusyError instead,
-so the caller can surface a clear "try again shortly" message rather than
-hanging.
+Checkout never blocks. Each engine is CPU-bound for the duration of a
+search, so making a caller wait for one to free up would just reintroduce
+serialization under a different name. When every engine is checked out,
+checkout() raises EngineBusyError immediately, so the caller can return a
+clear "try again shortly" response instead of hanging.
 """
 
 from __future__ import annotations

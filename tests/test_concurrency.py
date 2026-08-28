@@ -1,21 +1,21 @@
-"""Concurrency regression tests for the Stockfish engine pool
-(src/engine/engine_pool.py).
+"""Concurrency tests for the Stockfish engine pool (src/engine/engine_pool.py).
 
-Before this pool existed, app.py handed every Streamlit session the SAME
-cached chess.engine.SimpleEngine (@st.cache_resource singleton). python-chess
-serializes concurrent analyse() calls on one engine process (only one UCI
-command can be in flight at a time), so a second user's request didn't even
-start until the first user's full search finished. These tests drive two/
-three simulated users through the real ask() entry point at the same time,
-sharing one real EnginePool exactly as app.py now does -- only the Anthropic
-model call is faked (deterministic, no API cost), scripted to make the same
-tool call the real model makes for a position-evaluation question.
+A single shared chess.engine.SimpleEngine can't serve concurrent requests in
+parallel: python-chess serializes concurrent analyse() calls on one engine
+process, since only one UCI command can be in flight at a time. These tests
+verify the pool instead delivers real parallelism, by driving multiple
+simulated users through the real ask() entry point at the same time, all
+sharing one EnginePool the same way app.py does. Only the Anthropic model
+call is faked (deterministic, no API cost) -- the fake is scripted to make
+the same tool call the real model makes for a position-evaluation question,
+so the real evaluate_chess_position tool and the real pool are what's
+actually exercised.
 
-Confirms two things about the fix:
-1. Concurrent users up to the pool size get genuine parallelism (each
-   finishes close to solo-call time, not ~Nx it).
-2. A user beyond the pool size gets an immediate "too many concurrent users"
-   answer instead of hanging or erroring badly.
+Two properties are checked:
+1. Requests up to the pool size run in genuine parallel: each finishes close
+   to a solo-call baseline, not ~Nx it.
+2. A request beyond the pool size gets an immediate "too many concurrent
+   users" response rather than hanging or erroring.
 """
 
 from __future__ import annotations
@@ -43,11 +43,11 @@ POOL_SIZE = 2
 # is what full serialization on a shared engine looks like.
 SLA_MULTIPLIER = 1.6
 
-# Same position for every simulated user: the property under test is whether
-# N equal-cost requests run in parallel, not whether different positions cost
-# different amounts of search time (they do -- verified independently, e.g.
-# the position after 1.e4 takes ~2.4x as long to search as the start
-# position at depth 16, which would otherwise swamp the timing comparison).
+# Every simulated user searches the same position. Search cost varies widely
+# by position (e.g. the position after 1.e4 takes roughly 2.4x as long to
+# search as the start position at depth 16), so comparing timings across
+# different positions would swamp the signal these tests are actually after:
+# whether equal-cost requests run in parallel.
 EVAL_FEN = chess.Board().fen()
 
 
@@ -87,17 +87,18 @@ def _ask_for_position(
     question = f"Evaluate this chess position and tell me the best move: {fen}."
 
     if barrier is not None:
-        barrier.wait()  # line every simulated user up so they hit the pool at once
+        barrier.wait()  # synchronize simulated users so they hit the pool at the same instant
     start = time.monotonic()
     answer = ask(question, db_pool, engine_pool, voyage_client, client=client)
     return time.monotonic() - start, answer
 
 
 def test_users_up_to_pool_size_get_answers_within_sla(engine_pool):
-    # Measured on a separate, dedicated engine -- not one from engine_pool --
-    # so this reflects a genuinely cold, uncontended solo call. Reusing a
-    # pooled engine here would warm its transposition table before the
-    # concurrent run, unfairly advantaging whichever request lands on it.
+    # The baseline runs on its own dedicated engine, not one borrowed from
+    # engine_pool, so it reflects a cold, uncontended solo call. A pooled
+    # engine would carry a warmed-up transposition table into the baseline,
+    # giving an unearned speed advantage to whichever concurrent request
+    # later happens to reuse that same engine.
     baseline_pool = EnginePool(STOCKFISH_PATH, size=1)
     try:
         baseline, _ = _ask_for_position(EVAL_FEN, baseline_pool)

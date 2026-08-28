@@ -59,14 +59,15 @@ def build_tools(
     """Build the tool functions for one session, bound to the given DB pool,
     Stockfish engine pool, and Voyage client.
 
-    A connection is checked out of `db_pool` for the duration of each tool
-    call and returned afterward -- concurrent sessions no longer share one
-    connection. On a dead connection (Neon closes idle connections in
-    practice), the pool discards it and hands back a fresh one, all inside
-    the tool call: the Anthropic SDK's tool_runner catches every exception a
-    tool raises and turns it into a tool_result error sent back to the model,
-    so a raised psycopg2 error never reaches the caller of `ask()` to trigger
-    a retry there.
+    Each tool call checks a connection out of `db_pool` and returns it
+    afterward, rather than holding one connection for the whole session --
+    this is what lets concurrent sessions run without sharing a connection.
+    On a dead connection (Neon closes idle connections in practice), the
+    pool discards it and hands back a fresh one, all inside the tool call:
+    the Anthropic SDK's tool_runner catches every exception a tool raises
+    and turns it into a tool_result error sent back to the model, so a
+    raised psycopg2 error never reaches the caller of `ask()` to trigger a
+    retry there.
     """
 
     def _query(fn: Callable, *args, **kwargs):
