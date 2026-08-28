@@ -70,7 +70,11 @@ def _neon_connect_kwargs(database_url: str) -> dict[str, str]:
 
 
 def get_connection() -> psycopg2.extensions.connection:
-    load_dotenv()
+    # override=True: .env must win over anything already in os.environ, since
+    # Streamlit auto-loads .streamlit/secrets.toml into the environment before
+    # this runs (see get_engine_path in stockfish_eval.py for the full story).
+    # No effect in deployment, where .env doesn't exist -- nothing to override.
+    load_dotenv(override=True)
     database_url = os.environ["DATABASE_URL"]
     return psycopg2.connect(database_url, **_neon_connect_kwargs(database_url))
 
@@ -83,7 +87,7 @@ DB_POOL_MAX_CONN = 10
 
 
 def get_connection_pool() -> psycopg2.pool.ThreadedConnectionPool:
-    load_dotenv()
+    load_dotenv(override=True)  # see get_connection above for why override=True
     database_url = os.environ["DATABASE_URL"]
     return psycopg2.pool.ThreadedConnectionPool(
         DB_POOL_MIN_CONN, DB_POOL_MAX_CONN, database_url, **_neon_connect_kwargs(database_url)

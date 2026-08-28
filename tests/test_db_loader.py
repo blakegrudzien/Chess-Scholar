@@ -33,7 +33,14 @@ def _sample_game() -> GameRecord:
 
 def test_get_connection_reads_database_url(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@host:5432/db")
-    with patch("src.ingestion.db_loader.psycopg2.connect") as mock_connect:
+    # load_dotenv(override=True) would otherwise clobber the monkeypatched
+    # value above with whatever's in this machine's real .env file -- not
+    # a concern for get_connection() itself, just for keeping this test
+    # isolated from real local config.
+    with (
+        patch("src.ingestion.db_loader.load_dotenv"),
+        patch("src.ingestion.db_loader.psycopg2.connect") as mock_connect,
+    ):
         get_connection()
         mock_connect.assert_called_once_with("postgresql://u:p@host:5432/db")
 

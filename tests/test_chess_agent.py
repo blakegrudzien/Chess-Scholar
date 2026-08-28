@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import psycopg2
 
-from src.agent.chess_agent import ask, build_tools
+from src.agent.chess_agent import TOOL_LABELS, ask, build_tools
 from src.engine.engine_pool import EngineBusyError
 from src.engine.stockfish_eval import PositionEval
 from src.personalization.similarity import SimilarGame
@@ -250,3 +250,98 @@ def test_ask_returns_empty_string_when_no_messages_yielded():
     result = ask("some question", MagicMock(), MagicMock(), MagicMock(), client=client)
 
     assert result == ""
+
+
+def _tool_use_block(name: str) -> MagicMock:
+    # MagicMock(name=...) is reserved by unittest.mock for the mock's own
+    # repr, not for setting a real .name attribute -- has to be set after
+    # construction, or `block.name` silently returns the internal mock name.
+    block = MagicMock(type="tool_use")
+    block.name = name
+    return block
+
+
+def test_ask_reports_model_rationale_via_on_step():
+    tool_turn = MagicMock()
+    tool_turn.content = [
+        MagicMock(type="text", text="Checking Layer 2 for strategic ideas."),
+        _tool_use_block("search_annotations"),
+    ]
+    final_message = MagicMock()
+    final_message.content = [MagicMock(type="text", text="Final answer.")]
+
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_message]
+
+    steps = []
+    result = ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_step=steps.append)
+
+    assert result == "Final answer."
+    assert steps == ["Checking Layer 2 for strategic ideas."]
+
+
+def test_ask_falls_back_to_tool_label_when_model_gives_no_rationale():
+    tool_turn = MagicMock()
+    tool_turn.content = [_tool_use_block("evaluate_chess_position")]
+    final_message = MagicMock()
+    final_message.content = [MagicMock(type="text", text="Final answer.")]
+
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_message]
+
+    steps = []
+    ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_step=steps.append)
+
+    assert steps == [TOOL_LABELS["evaluate_chess_position"]]
+
+
+def test_ask_joins_fallback_labels_for_multiple_tools_with_no_rationale():
+    tool_turn = MagicMock()
+    tool_turn.content = [
+        _tool_use_block("get_eco_summary"),
+        _tool_use_block("search_annotations"),
+    ]
+    final_message = MagicMock()
+    final_message.content = [MagicMock(type="text", text="Final answer.")]
+
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_message]
+
+    steps = []
+    ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_step=steps.append)
+
+    assert steps == [f"{TOOL_LABELS['get_eco_summary']} / {TOOL_LABELS['search_annotations']}"]
+
+
+def test_ask_does_not_call_on_step_for_a_text_only_turn():
+    final_message = MagicMock()
+    final_message.content = [MagicMock(type="text", text="Final answer.")]
+
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [final_message]
+
+    steps = []
+    ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_step=steps.append)
+
+    assert steps == []
+
+
+def test_ask_without_on_step_does_not_error_on_a_tool_call_turn():
+    tool_turn = MagicMock()
+    tool_turn.content = [_tool_use_block("search_annotations")]
+    final_message = MagicMock()
+    final_message.content = [MagicMock(type="text", text="Final answer.")]
+
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_message]
+
+    result = ask("q", MagicMock(), MagicMock(), MagicMock(), client=client)
+
+    assert result == "Final answer."
+
+
+def test_tool_labels_cover_every_tool():
+    tools = build_tools(MagicMock(), MagicMock(), MagicMock())
+    tool_names = {t.name for t in tools}
+
+    assert tool_names == set(TOOL_LABELS)

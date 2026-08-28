@@ -43,7 +43,10 @@ VOYAGE_RETRYABLE_ERRORS = (
 
 
 def get_voyage_client() -> voyageai.Client:
-    load_dotenv()
+    # override=True: see get_connection in db_loader.py for why .env must
+    # win over whatever's already in os.environ (Streamlit's auto-loaded
+    # .streamlit/secrets.toml, in particular).
+    load_dotenv(override=True)
     return voyageai.Client(api_key=os.environ["VOYAGE_API_KEY"])
 
 

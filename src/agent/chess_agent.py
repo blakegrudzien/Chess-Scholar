@@ -45,7 +45,24 @@ this is illustrative, not authoritative, when you use it.
 
 Combine tools when a question calls for it (e.g. stats + commentary for an \
 opening-profile question). Be direct about which tool(s) you used.
+
+Before calling a tool, state in one short sentence which layer you're using \
+and why -- e.g. "Checking Layer 2 for strategic ideas about isolated pawns." \
+This sentence is shown to the user live while they wait; keep it brief and \
+write it as a standalone status update, not as part of your eventual answer.
 """
+
+# Fallback status text per tool, shown if a turn's tool call arrives with no
+# accompanying sentence from the model (see _report_tool_steps). Doubles as
+# a human-readable label for which of the four layers each tool belongs to.
+TOOL_LABELS: dict[str, str] = {
+    "get_eco_summary": "📊 Layer 1 (structured search) -- pulling opening statistics.",
+    "get_piece_placement": "📊 Layer 1 (structured search) -- checking piece placement frequency.",
+    "get_common_moves_at_ply": "📊 Layer 1 (structured search) -- checking common moves.",
+    "search_annotations": "🔎 Layer 2 (semantic search) -- searching commentary and book text.",
+    "evaluate_chess_position": "♟️ Layer 3 (Stockfish) -- evaluating the position.",
+    "find_similar_corpus_games": "🔁 Layer 4 (similarity search) -- comparing against the corpus.",
+}
 
 
 DB_RETRYABLE_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
@@ -214,15 +231,37 @@ def build_tools(
     ]
 
 
+def _report_tool_steps(message, on_step: Callable[[str], None]) -> None:
+    """Surface one status line for a turn that calls tool(s), preferring the
+    model's own stated rationale (see the "before calling a tool" system
+    prompt instruction) and falling back to TOOL_LABELS if a turn's tool_use
+    happens to arrive with no accompanying sentence.
+    """
+    tool_names = [block.name for block in message.content if block.type == "tool_use"]
+    if not tool_names:
+        return
+    rationale = "".join(block.text for block in message.content if block.type == "text").strip()
+    if not rationale:
+        rationale = " / ".join(TOOL_LABELS.get(name, f"Calling {name}...") for name in tool_names)
+    on_step(rationale)
+
+
 def ask(
     question: str,
     db_pool: psycopg2.pool.ThreadedConnectionPool,
     engine_pool: EnginePool,
     voyage_client: voyageai.Client,
     client: anthropic.Anthropic | None = None,
+    on_step: Callable[[str], None] | None = None,
 ) -> str:
     """Answer one question, routing across the four layers via tool-calling.
     Returns the final response text.
+
+    If `on_step` is given, it's called once per turn that includes a tool
+    call, with a short status string describing which layer is being used
+    and why -- meant for a caller to show live while the request is in
+    flight, since a full answer can take several sequential tool-calling
+    round trips.
     """
     client = client or anthropic.Anthropic()
     tools = build_tools(db_pool, engine_pool, voyage_client)
@@ -238,6 +277,8 @@ def ask(
     last_message = None
     for message in runner:
         last_message = message
+        if on_step is not None:
+            _report_tool_steps(message, on_step)
 
     if last_message is None:
         return ""

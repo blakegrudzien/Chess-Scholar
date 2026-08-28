@@ -59,7 +59,20 @@ CREATE INDEX IF NOT EXISTS idx_moves_capture ON moves(is_capture) WHERE is_captu
 -- opening prefix by ply across all games, not scoped to one game_id)
 CREATE INDEX IF NOT EXISTS idx_moves_ply_san ON moves(ply, move_san);
 
--- Index for Layer 2 vector search (IVFFlat; fine for a few thousand-tens of thousands of chunks)
-CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks USING ivfflat (embedding vector_cosine_ops);
+-- Index for Layer 2 vector search (IVFFlat). This script runs before the
+-- corpus is loaded, so `chunks` is empty here and `lists` can't be sized
+-- correctly yet -- IVFFlat's clustering quality depends on the row count at
+-- BUILD time, not query time. Building it against an empty table produces a
+-- degenerate index (effectively one giant list) that silently falls back to
+-- scanning nearly the whole table on every query, no error, just ~100-300x
+-- slower lookups. This index is intentionally left out of the initial
+-- schema; after loading the corpus (and any time its size changes by an
+-- order of magnitude), build or rebuild it explicitly with `lists` set to
+-- roughly (row count / 1000) for up to ~1M rows:
+--
+--   SET maintenance_work_mem = '256MB';  -- lists this size needs more than Neon's default 64MB
+--   CREATE INDEX idx_chunks_embedding ON chunks
+--     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 470);  -- ~468k rows
+--   ANALYZE chunks;
 CREATE INDEX IF NOT EXISTS idx_chunks_year ON chunks(year);
 CREATE INDEX IF NOT EXISTS idx_chunks_source_type ON chunks(source_type);

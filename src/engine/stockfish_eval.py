@@ -37,7 +37,16 @@ class PositionEval:
 
 
 def get_engine_path() -> str:
-    load_dotenv()
+    # override=True: .env must win over anything already in os.environ.
+    # Streamlit auto-loads .streamlit/secrets.toml into the environment
+    # before app.py runs; that file exists only as a staging copy for
+    # pasting into Streamlit Cloud's dashboard, but Streamlit doesn't know
+    # that and injects it locally too. Without override=True, load_dotenv()
+    # leaves that value in place instead of using .env's local one -- e.g.
+    # STOCKFISH_PATH ends up as the deployed container's Linux path
+    # (/usr/games/stockfish) even on a Mac. No effect in the actual
+    # deployment, where .env doesn't exist and there's nothing to override.
+    load_dotenv(override=True)
     return os.environ["STOCKFISH_PATH"]
 
 

@@ -76,14 +76,27 @@ def _get_anthropic_client() -> anthropic.Anthropic:
     return anthropic.Anthropic()
 
 
-def ask_agent(question: str) -> str:
+def ask_agent(question: str, on_step=None) -> str:
     return ask(
         question,
         _get_db_pool(),
         _get_engine_pool(),
         _get_voyage(),
         client=_get_anthropic_client(),
+        on_step=on_step,
     )
+
+
+def _ask_with_status(question: str) -> str:
+    """Run ask_agent, showing each tool-calling step live in an st.status
+    panel instead of a blank spinner -- a full answer can take several
+    sequential model round trips, so this both demonstrates the agent's
+    layer routing and gives the wait something to look at.
+    """
+    with st.status("Thinking...", expanded=True) as status:
+        answer = ask_agent(question, on_step=status.write)
+        status.update(label="Done", state="complete", expanded=False)
+    return answer
 
 
 def render_chat_tab() -> None:
@@ -104,8 +117,7 @@ def render_chat_tab() -> None:
         with st.chat_message("user"):
             st.markdown(question)
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                answer = ask_agent(question)
+            answer = _ask_with_status(question)
             st.markdown(answer)
         st.session_state.chat_history.append(("assistant", answer))
 
@@ -183,11 +195,10 @@ def render_board_tab() -> None:
 
     st.divider()
     if st.button("Evaluate this position with Stockfish"):
-        with st.spinner("Thinking..."):
-            answer = ask_agent(
-                f"Evaluate this chess position and tell me the best move: {board.fen()}. "
-                "Use the engine, don't just guess."
-            )
+        answer = _ask_with_status(
+            f"Evaluate this chess position and tell me the best move: {board.fen()}. "
+            "Use the engine, don't just guess."
+        )
         st.markdown(answer)
 
 
@@ -219,13 +230,12 @@ def render_pgn_upload_tab() -> None:
     st.code(preview, language=None)
 
     if st.button("Find similar games in the corpus"):
-        with st.spinner("Searching..."):
-            question = (
-                "Here is a game I played, as a list of moves in order: "
-                f"{', '.join(move_sans)}. Find similar games in the corpus and give me "
-                "an illustrative comparison."
-            )
-            answer = ask_agent(question)
+        question = (
+            "Here is a game I played, as a list of moves in order: "
+            f"{', '.join(move_sans)}. Find similar games in the corpus and give me "
+            "an illustrative comparison."
+        )
+        answer = _ask_with_status(question)
         st.markdown(answer)
 
 
