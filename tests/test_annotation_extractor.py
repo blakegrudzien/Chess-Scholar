@@ -1,6 +1,9 @@
+import io
+
+import chess.pgn
 import pytest
 
-from src.ingestion.annotation_extractor import extract_annotations
+from src.ingestion.annotation_extractor import extract_annotations, extract_chapter_comment_text
 from src.ingestion.pgn_parser import parse_pgn
 
 SAMPLE_PGN = (
@@ -51,6 +54,20 @@ def test_moves_without_comments_are_skipped(pgn_file):
     chunks = list(extract_annotations(pgn_file))
     ply_labels = {chunk.ply_or_page for chunk in chunks}
     assert "1" not in ply_labels  # 1. e4 has no comment or NAG
+
+
+def test_extract_chapter_comment_text_joins_pre_game_and_move_comments():
+    game = chess.pgn.read_game(io.StringIO(SAMPLE_PGN))
+    assert game is not None
+    text = extract_chapter_comment_text(game)
+    assert text == ("Pre-game notes: an Evans Gambit demo.\nBxb4!?: Accepting the gambit.")
+
+
+def test_extract_chapter_comment_text_empty_when_no_comments():
+    uncommented = '[Event "Test"]\n[White "A"]\n[Black "B"]\n[Result "*"]\n\n1. e4 e5 *\n'
+    game = chess.pgn.read_game(io.StringIO(uncommented))
+    assert game is not None
+    assert extract_chapter_comment_text(game) == ""
 
 
 def test_game_id_matches_pgn_parser_for_same_game(pgn_file):

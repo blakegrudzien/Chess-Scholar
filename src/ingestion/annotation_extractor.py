@@ -75,6 +75,60 @@ def _strip_computer_glyphs(comment: str) -> str:
     return re.sub(r"\s+", " ", without_glyphs).strip()
 
 
+def _iter_plies_with_comments(
+    game: chess.pgn.Game,
+) -> Iterator[tuple[int, str, str, set[int]]]:
+    """Walk one parsed chapter/game's mainline, yielding
+    (ply, move_san, glyph_stripped_comment, nags) for every move -- comment
+    is an empty string for moves with no annotation, not omitted, so
+    callers can tell "no comment" from "ply doesn't exist" and still see
+    every move if they need to (compute_game_id needs the full move
+    sequence, not just the annotated plies).
+
+    SAN is computed before each push, matching pgn_parser.parse_game,
+    since python-chess needs the pre-move board state to disambiguate
+    algebraic notation. Shared by _extract_game_annotations (structures
+    this into chunks-table-shaped records) and extract_chapter_comment_text
+    (joins it into one readable preview block) so the walk itself is
+    written once.
+    """
+    board = game.board()
+    for ply, node in enumerate(game.mainline(), start=1):
+        move = node.move
+        move_san = board.san(move)
+        board.push(move)
+        yield ply, move_san, _strip_computer_glyphs(node.comment), node.nags
+
+
+def _move_label(move_san: str, nags: set[int]) -> str:
+    nag_prose = _nags_to_prose(nags)
+    return f"{move_san}{nag_prose}" if nag_prose else move_san
+
+
+def extract_chapter_comment_text(game: chess.pgn.Game) -> str:
+    """Concatenate every prose comment in one parsed chapter/game into a
+    single readable block: the pre-game comment first (if any), then one
+    line per annotated move as "SAN<nags>: comment".
+
+    For the study labeling tool (scripts/label_studies_app.py), which needs
+    a quick human-readable preview of a Lichess study chapter's annotations
+    to judge quality without leaving the app -- not the chunks-table-shaped
+    output extract_annotations produces, since a preview reader wants the
+    prose, not a game_id to join chunks back to a games row.
+    """
+    lines = []
+    pre_game_comment = _strip_computer_glyphs(game.comment)
+    if pre_game_comment:
+        lines.append(pre_game_comment)
+
+    for _, move_san, comment, nags in _iter_plies_with_comments(game):
+        if not comment:
+            continue
+        lines.append(f"{_move_label(move_san, nags)}: {comment}")
+
+    return "\n".join(lines)
+
+
 def _extract_game_annotations(
     game: chess.pgn.Game, source_title: str | None, author: str | None
 ) -> Iterator[AnnotationChunk]:
@@ -82,17 +136,8 @@ def _extract_game_annotations(
     year = parse_year(headers.get("Date"))
     eco_code = headers.get("ECO")
 
-    board = game.board()
-    move_sans: list[str] = []
-    ply_annotations: list[tuple[int, str, str, set[int]]] = []
-
-    for ply, node in enumerate(game.mainline(), start=1):
-        move = node.move
-        move_san = board.san(move)  # must be computed before push, same as pgn_parser
-        board.push(move)
-        move_sans.append(move_san)
-        ply_annotations.append((ply, move_san, _strip_computer_glyphs(node.comment), node.nags))
-
+    ply_annotations = list(_iter_plies_with_comments(game))
+    move_sans = [move_san for _, move_san, _, _ in ply_annotations]
     game_id = compute_game_id(headers, move_sans)
 
     pre_game_comment = _strip_computer_glyphs(game.comment)
@@ -111,8 +156,7 @@ def _extract_game_annotations(
     for ply, move_san, comment, nags in ply_annotations:
         if not comment:
             continue
-        nag_prose = _nags_to_prose(nags)
-        move_label = f"{move_san}{nag_prose}" if nag_prose else move_san
+        move_label = _move_label(move_san, nags)
         yield AnnotationChunk(
             source_type="game_annotation",
             game_id=game_id,
