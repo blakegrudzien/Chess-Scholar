@@ -1,0 +1,46 @@
+name: Lint and test
+
+# Runs on every push to main and every pull request, so a broken commit or
+# lint violation can't land without something catching it automatically --
+# previously nothing in the repo enforced this, only manual runs before a
+# commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      # pyproject.toml declares requires-python = ">=3.11". Testing only
+      # whichever version happens to be installed on a given machine would
+      # leave that claim unverified; testing both endpoints of the stated
+      # range actually backs it up.
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Stockfish
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y stockfish
+          echo "/usr/games" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Check formatting
+        run: ruff format --check .
+
+      - name: Test
+        run: pytest -v tests

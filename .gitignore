@@ -26,3 +26,8 @@ data/processed/*
 
 
 ideas.txt
+
+
+.agents/skills
+
+skills-lock.json

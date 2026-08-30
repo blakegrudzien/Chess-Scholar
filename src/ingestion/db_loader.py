@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import logging
 import os
+import time
 from collections.abc import Iterable
 from urllib.parse import urlparse
 
@@ -29,7 +31,14 @@ from dotenv import load_dotenv
 from psycopg2.extras import execute_values
 
 from src.ingestion.annotation_extractor import AnnotationChunk, extract_annotations
+from src.ingestion.hash_utils import ID_DELIMITER, check_no_delimiter
 from src.ingestion.pgn_parser import GameRecord, parse_pgn
+
+# getLogger(__name__), not the root logger: log records carry this module's
+# dotted path, so anything consuming these logs can tell where a message
+# came from, and can configure this module's verbosity independently of
+# every other module's.
+logger = logging.getLogger(__name__)
 
 GAMES_INSERT = """
     INSERT INTO games (game_id, white, black, event, year, eco_code, result, source)
@@ -92,6 +101,41 @@ def get_connection_pool() -> psycopg2.pool.ThreadedConnectionPool:
     return psycopg2.pool.ThreadedConnectionPool(
         DB_POOL_MIN_CONN, DB_POOL_MAX_CONN, database_url, **_neon_connect_kwargs(database_url)
     )
+
+
+class DatabaseBusyError(Exception):
+    """Raised by get_connection_with_timeout() when no pooled connection
+    becomes available within the wait budget.
+    """
+
+
+# psycopg2's pool has no built-in wait/timeout option: getconn() either
+# returns a connection immediately or raises PoolError right away. A DB
+# checkout is fast and cheap (unlike a Stockfish search, which pins a CPU
+# core for the whole request), so a caller arriving a moment after the pool
+# was momentarily exhausted is likely to succeed if it just waits briefly --
+# worth doing here in a way it wouldn't be worth doing for the engine pool.
+DB_POOL_CHECKOUT_TIMEOUT_SECONDS = 2.0
+DB_POOL_CHECKOUT_POLL_INTERVAL_SECONDS = 0.05
+
+
+def get_connection_with_timeout(
+    db_pool: psycopg2.pool.ThreadedConnectionPool,
+) -> psycopg2.extensions.connection:
+    """Check a connection out of db_pool, retrying briefly if it's
+    momentarily exhausted instead of failing on the first attempt.
+    """
+    deadline = time.monotonic() + DB_POOL_CHECKOUT_TIMEOUT_SECONDS
+    while True:
+        try:
+            return db_pool.getconn()
+        except psycopg2.pool.PoolError:
+            if time.monotonic() >= deadline:
+                raise DatabaseBusyError(
+                    "The database is handling too many requests right now. "
+                    "Please try again in a moment."
+                ) from None
+            time.sleep(DB_POOL_CHECKOUT_POLL_INTERVAL_SECONDS)
 
 
 def load_games(
@@ -159,16 +203,16 @@ def load_games(
 
 
 def _chunk_hash(chunk: AnnotationChunk) -> str:
-    canonical = "|".join(
-        [
-            chunk.source_type,
-            chunk.game_id or "",
-            chunk.source_title or "",
-            chunk.author or "",
-            chunk.ply_or_page or "",
-            chunk.text,
-        ]
-    )
+    fields = [
+        chunk.source_type,
+        chunk.game_id or "",
+        chunk.source_title or "",
+        chunk.author or "",
+        chunk.ply_or_page or "",
+        chunk.text,
+    ]
+    check_no_delimiter(*fields)
+    canonical = ID_DELIMITER.join(fields)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -230,19 +274,29 @@ def _main() -> None:
         if args.mode == "games":
             games = parse_pgn(args.input, source=args.source)
             games_inserted, moves_inserted = load_games(games, conn)
-            print(
-                f"Inserted {games_inserted} new game(s), {moves_inserted} "
-                f"new move(s) from {args.input}"
+            logger.info(
+                "Inserted %d new game(s), %d new move(s) from %s",
+                games_inserted,
+                moves_inserted,
+                args.input,
             )
         else:
             chunks = extract_annotations(
                 args.input, source_title=args.source_title, author=args.author
             )
             chunks_inserted = load_chunks(chunks, conn)
-            print(f"Inserted {chunks_inserted} new chunk(s) from {args.input}")
+            logger.info("Inserted %d new chunk(s) from %s", chunks_inserted, args.input)
     finally:
         conn.close()
 
 
 if __name__ == "__main__":
+    # basicConfig belongs here, not at module level: it's a global side
+    # effect (it configures the root logger's handlers), so only the
+    # script entry point should trigger it. A module that configures
+    # logging as a side effect of being imported would surprise (and
+    # override the choices of) whatever imports it.
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     _main()

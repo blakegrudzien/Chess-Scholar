@@ -1,8 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "chess-rag"
 version = "0.1.0"
 description = "Hybrid structured-search + RAG chess assistant"
 requires-python = ">=3.11"
+# This is the source of truth for runtime dependencies. requirements.txt at
+# the repo root duplicates this list by hand for Streamlit Community Cloud,
+# which reads requirements.txt specifically and can't be pointed at this
+# file. Update both when changing a dependency.
 dependencies = [
     "python-chess>=1.999",
     "anthropic>=0.40",

@@ -131,8 +131,7 @@ def test_user_beyond_pool_size_gets_busy_message_not_a_hang(engine_pool):
     barrier = threading.Barrier(num_users)
     with ThreadPoolExecutor(max_workers=num_users) as pool:
         futures = [
-            pool.submit(_ask_for_position, EVAL_FEN, engine_pool, barrier)
-            for _ in range(num_users)
+            pool.submit(_ask_for_position, EVAL_FEN, engine_pool, barrier) for _ in range(num_users)
         ]
         results = [f.result(timeout=30) for f in futures]
 

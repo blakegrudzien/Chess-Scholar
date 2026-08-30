@@ -15,7 +15,8 @@ import voyageai
 from anthropic import beta_tool
 
 from src.engine.engine_pool import EngineBusyError, EnginePool
-from src.engine.stockfish_eval import evaluate_position
+from src.engine.stockfish_eval import DEFAULT_DEPTH, evaluate_position
+from src.ingestion.db_loader import get_connection_with_timeout
 from src.personalization.similarity import find_similar_games as _find_similar_games
 from src.rag.vector_search import search_chunks
 from src.search.structured_search import common_moves_at_ply, eco_summary, piece_placement_frequency
@@ -67,6 +68,11 @@ TOOL_LABELS: dict[str, str] = {
 
 DB_RETRYABLE_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
 
+# Original attempt plus one retry on a dropped connection. Named rather than
+# inlined as a bare 2, so the retry budget is a single, intentional value
+# instead of a number a reader has to infer the meaning of.
+MAX_QUERY_ATTEMPTS = 2
+
 
 def build_tools(
     db_pool: psycopg2.pool.ThreadedConnectionPool,
@@ -88,15 +94,35 @@ def build_tools(
     """
 
     def _query(fn: Callable, *args, **kwargs):
-        conn = db_pool.getconn()
-        try:
-            return fn(conn, *args, **kwargs)
-        except DB_RETRYABLE_ERRORS:
-            db_pool.putconn(conn, close=True)
-            conn = db_pool.getconn()
-            return fn(conn, *args, **kwargs)
-        finally:
-            db_pool.putconn(conn)
+        conn = get_connection_with_timeout(db_pool)
+        for attempt in range(MAX_QUERY_ATTEMPTS):
+            try:
+                result = fn(conn, *args, **kwargs)
+            except DB_RETRYABLE_ERRORS:
+                # This connection is confirmed dead either way: discard it
+                # rather than returning it to the pool for the next checkout
+                # to fail on too.
+                db_pool.putconn(conn, close=True)
+                if attempt == MAX_QUERY_ATTEMPTS - 1:
+                    raise
+                conn = get_connection_with_timeout(db_pool)
+                continue
+            except Exception:
+                # Not a connection problem, so the connection itself is
+                # still healthy: return it normally before letting the
+                # caller's error (e.g. a bad argument) propagate.
+                db_pool.putconn(conn)
+                raise
+            else:
+                db_pool.putconn(conn)
+                return result
+        # Every iteration above ends in return or raise (the last attempt's
+        # except clause always raises instead of looping again), so this is
+        # unreachable. Stated explicitly rather than left as an implicit gap:
+        # it tells a type checker (and a future reader who changes
+        # MAX_QUERY_ATTEMPTS) that falling out of the loop is a bug, not a
+        # valid path returning None.
+        raise AssertionError("unreachable: every _query attempt returns or raises")
 
     @beta_tool
     def get_eco_summary(eco_code: str) -> str:
@@ -169,13 +195,13 @@ def build_tools(
         return "\n".join(f"- {r.text}" for r in results)
 
     @beta_tool
-    def evaluate_chess_position(fen: str, depth: int = 16) -> str:
+    def evaluate_chess_position(fen: str, depth: int = DEFAULT_DEPTH) -> str:
         """Get Stockfish's ground-truth evaluation of a chess position.
         Always call this before judging whether a move or position is good.
 
         Args:
             fen: The position in FEN notation.
-            depth: Search depth; higher is more accurate but slower. Defaults to 16.
+            depth: Search depth; higher is more accurate but slower. Defaults to 18.
         """
         try:
             board = chess.Board(fen)

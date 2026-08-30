@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 import psycopg2
+import pytest
 
 from src.agent.chess_agent import TOOL_LABELS, ask, build_tools
 from src.engine.engine_pool import EngineBusyError
@@ -67,6 +68,37 @@ def test_get_eco_summary_reconnects_after_dropped_connection():
     db_pool.putconn.assert_any_call(dead_conn, close=True)
     db_pool.putconn.assert_any_call(fresh_conn)
     assert "1 games" in result
+
+
+def test_get_eco_summary_discards_both_connections_after_repeated_failures():
+    """If the retry also hits a dropped connection, that second connection
+    must be discarded too, not returned to the pool as healthy for the next
+    caller to fail on. This is the bug the attempt-tracking loop in _query
+    fixes: the old single try/except/finally shape had no way to tell a
+    connection that failed twice from one that succeeded.
+    """
+    db_pool = MagicMock()
+    dead_conn_1 = MagicMock()
+    dead_conn_2 = MagicMock()
+    db_pool.getconn.side_effect = [dead_conn_1, dead_conn_2]
+    engine_pool = MagicMock()
+    voyage_client = MagicMock()
+    tools = {t.name: t for t in build_tools(db_pool, engine_pool, voyage_client)}
+
+    with (
+        patch(
+            "src.agent.chess_agent.eco_summary",
+            side_effect=[
+                psycopg2.InterfaceError("connection already closed"),
+                psycopg2.OperationalError("connection also closed"),
+            ],
+        ),
+        pytest.raises(psycopg2.OperationalError),
+    ):
+        tools["get_eco_summary"]("C50")
+
+    db_pool.putconn.assert_any_call(dead_conn_1, close=True)
+    db_pool.putconn.assert_any_call(dead_conn_2, close=True)
 
 
 def test_get_eco_summary_reports_no_games():
@@ -182,8 +214,7 @@ def test_evaluate_chess_position_reports_busy_when_pool_exhausted():
     db_pool = MagicMock()
     engine_pool = MagicMock()
     busy_message = (
-        "All 2 engine(s) are busy handling other requests right now. "
-        "Please try again in a moment."
+        "All 2 engine(s) are busy handling other requests right now. Please try again in a moment."
     )
     engine_pool.checkout.side_effect = EngineBusyError(busy_message)
     voyage_client = MagicMock()

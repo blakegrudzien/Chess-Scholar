@@ -11,23 +11,59 @@ clear "try again shortly" response instead of hanging.
 
 from __future__ import annotations
 
+import logging
 import queue
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 
 import chess.engine
+
+logger = logging.getLogger(__name__)
 
 
 class EngineBusyError(Exception):
     """Raised by checkout() when every pooled engine is already in use."""
 
 
+def _quit_all(engines: Iterable[chess.engine.SimpleEngine]) -> None:
+    """Quit each engine, continuing even if one fails to shut down cleanly.
+
+    Deliberately broader than the rest of this codebase's error handling:
+    everywhere else, catching Exception and moving on would hide a real
+    bug. Here it is the correct behavior, not a shortcut, because the goal
+    of this function is "release as many engines as possible," and one
+    engine already being dead is exactly the kind of failure this needs to
+    survive to reach the rest. It's still worth knowing about, though, so
+    it's logged rather than silently discarded -- this module has no
+    __main__ entry point to call logging.basicConfig from, but a WARNING
+    still reaches stderr by default: Python's logging module falls back to
+    a "handler of last resort" for WARNING and above when nothing else has
+    configured one, specifically so warnings are never completely silent.
+    """
+    for engine in engines:
+        try:
+            engine.quit()
+        except Exception as exc:
+            logger.warning("Engine failed to quit cleanly: %s", exc)
+
+
 class EnginePool:
     def __init__(self, engine_path: str, size: int):
         self.size = size
         self._available: queue.Queue[chess.engine.SimpleEngine] = queue.Queue(maxsize=size)
-        for _ in range(size):
-            self._available.put(chess.engine.SimpleEngine.popen_uci(engine_path))
+        spawned: list[chess.engine.SimpleEngine] = []
+        try:
+            for _ in range(size):
+                engine = chess.engine.SimpleEngine.popen_uci(engine_path)
+                spawned.append(engine)
+                self._available.put(engine)
+        except Exception:
+            # If engine N fails to spawn, engines 1..N-1 are already live
+            # subprocesses this object never finishes constructing, so
+            # nothing else will ever get a chance to close them. Release
+            # them here before re-raising, rather than leaking them.
+            _quit_all(spawned)
+            raise
 
     @contextmanager
     def checkout(self) -> Iterator[chess.engine.SimpleEngine]:
@@ -44,5 +80,7 @@ class EnginePool:
             self._available.put(engine)
 
     def close(self) -> None:
+        engines: list[chess.engine.SimpleEngine] = []
         while not self._available.empty():
-            self._available.get_nowait().quit()
+            engines.append(self._available.get_nowait())
+        _quit_all(engines)

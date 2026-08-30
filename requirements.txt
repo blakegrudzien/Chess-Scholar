@@ -1,3 +1,7 @@
+# Kept in sync by hand with the [project.dependencies] list in pyproject.toml.
+# This file exists only because Streamlit Community Cloud reads requirements.txt
+# from the repo root; pyproject.toml is the source of truth for local dev.
+# When you add or change a dependency, update both.
 python-chess>=1.999
 anthropic>=0.40
 voyageai>=0.3

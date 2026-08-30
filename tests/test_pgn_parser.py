@@ -1,7 +1,8 @@
 import chess
+import chess.pgn
 import pytest
 
-from src.ingestion.pgn_parser import parse_pgn
+from src.ingestion.pgn_parser import compute_game_id, parse_pgn
 
 SAMPLE_PGN = """[Event "Test Game"]
 [Site "?"]
@@ -93,3 +94,21 @@ def test_game_id_differs_for_different_games(tmp_path):
     first_id = next(parse_pgn(original_path, source="lichess")).game_id
     second_id = next(parse_pgn(other_path, source="lichess")).game_id
     assert first_id != second_id
+
+
+def test_compute_game_id_rejects_a_header_containing_the_delimiter():
+    # A "|" inside a header could shift where compute_game_id's joined
+    # fields appear to divide, letting two different games hash the same
+    # -- silently dropping one of them at insert time.
+    headers = chess.pgn.Headers(
+        {
+            "White": "Weird|Name",
+            "Black": "Bob",
+            "Event": "Test",
+            "Date": "2021.05.01",
+            "Round": "1",
+            "Result": "1-0",
+        }
+    )
+    with pytest.raises(ValueError, match=r"\|"):
+        compute_game_id(headers, ["e4", "d5"])

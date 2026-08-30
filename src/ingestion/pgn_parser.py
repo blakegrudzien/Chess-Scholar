@@ -11,6 +11,7 @@ from pathlib import Path
 import chess
 import chess.pgn
 
+from src.ingestion.hash_utils import ID_DELIMITER, check_no_delimiter
 from src.ingestion.pgn_encoding import PGN_DECODE_ERRORS
 
 PIECE_VALUES = {
@@ -65,17 +66,17 @@ def compute_game_id(headers: chess.pgn.Headers, move_sans: list[str]) -> str:
     extracted from the same game agree on game_id and can join back to it.
     """
     move_text = " ".join(move_sans)
-    canonical = "|".join(
-        [
-            headers.get("White", ""),
-            headers.get("Black", ""),
-            headers.get("Event", ""),
-            headers.get("Date", ""),
-            headers.get("Round", ""),
-            headers.get("Result", ""),
-            move_text,
-        ]
-    )
+    fields = [
+        headers.get("White", ""),
+        headers.get("Black", ""),
+        headers.get("Event", ""),
+        headers.get("Date", ""),
+        headers.get("Round", ""),
+        headers.get("Result", ""),
+        move_text,
+    ]
+    check_no_delimiter(*fields)
+    canonical = ID_DELIMITER.join(fields)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

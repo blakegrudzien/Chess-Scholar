@@ -10,11 +10,13 @@ Known reliability caveats (see CLAUDE.md) surfaced directly in the UI:
 
 from __future__ import annotations
 
+import itertools
 import os
 import re
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 # `streamlit run src/app.py` puts src/ itself on sys.path, not the project
@@ -87,7 +89,11 @@ def _get_anthropic_client() -> anthropic.Anthropic:
     return anthropic.Anthropic()
 
 
-def ask_agent(question: str, on_step=None, on_chunk=None) -> str:
+def ask_agent(
+    question: str,
+    on_step: Callable[[str], None] | None = None,
+    on_chunk: Callable[[str], None] | None = None,
+) -> str:
     return ask(
         question,
         _get_db_pool(),
@@ -133,18 +139,20 @@ def _ask_with_status(question: str) -> str:
     stop_placeholder.button("Stop generating", key="stop_generating")
     answer_area = st.empty()
 
-    accumulated = [""]
+    accumulated_text = ""
 
     def on_chunk(delta: str) -> None:
+        nonlocal accumulated_text
         pieces = _WORD_SPLIT_RE.findall(delta) or [delta]
         for piece in pieces:
-            accumulated[0] += piece
-            answer_area.markdown(accumulated[0])
+            accumulated_text += piece
+            answer_area.markdown(accumulated_text)
             time.sleep(STREAM_WORD_DELAY_SECONDS)
 
     def on_step(text: str) -> None:
+        nonlocal accumulated_text
         status.write(text)
-        accumulated[0] = ""
+        accumulated_text = ""
         answer_area.empty()
 
     answer = ask_agent(question, on_step=on_step, on_chunk=on_chunk)
@@ -268,15 +276,22 @@ def render_pgn_upload_tab() -> None:
         tmp.write(uploaded.getvalue())
         tmp_path = tmp.name
     try:
-        games = list(parse_pgn(tmp_path, source="user_upload"))
+        # Only the first game is ever used below, so pull at most two from
+        # the generator: the first to use, and a second only to learn
+        # whether there's more than one, without fully parsing an upload
+        # (untrusted input) that could contain a large number of games.
+        first_two_games = list(itertools.islice(parse_pgn(tmp_path, source="user_upload"), 2))
     finally:
         os.unlink(tmp_path)
 
-    if not games:
+    if not first_two_games:
         st.error("Couldn't find a game in that file.")
         return
 
-    game = games[0]
+    if len(first_two_games) > 1:
+        st.info("This file has more than one game. Only the first is analyzed.")
+
+    game = first_two_games[0]
     move_sans = [m.move_san for m in game.moves]
     st.write(f"Parsed **{game.white or '?'} vs {game.black or '?'}** ({len(move_sans)} plies)")
     preview = " ".join(move_sans[:20]) + (" ..." if len(move_sans) > 20 else "")

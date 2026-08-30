@@ -9,6 +9,7 @@ rows -- the same idempotency principle as db_loader's ON CONFLICT inserts.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -22,6 +23,8 @@ from pgvector.psycopg2 import register_vector
 from psycopg2.extras import execute_values
 
 from src.ingestion.db_loader import get_connection
+
+logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 128  # Voyage API max texts per embed() call
 RETRY_BACKOFF_SECONDS = 5
@@ -124,16 +127,18 @@ def embed_pending_chunks(
 
                 total_embedded += len(batch)
                 consecutive_failures = 0
-                print(
-                    f"batch={len(batch)} fetch={fetch_elapsed:.2f}s "
-                    f"embed={embed_elapsed:.2f}s write={write_elapsed:.2f}s "
-                    f"total={total_embedded}",
-                    flush=True,
+                logger.info(
+                    "batch=%d fetch=%.2fs embed=%.2fs write=%.2fs total=%d",
+                    len(batch),
+                    fetch_elapsed,
+                    embed_elapsed,
+                    write_elapsed,
+                    total_embedded,
                 )
             except (psycopg2.OperationalError, psycopg2.InterfaceError) as exc:
                 consecutive_failures += 1
-                print(
-                    f"{type(exc).__name__} (consecutive={consecutive_failures}): {exc}", flush=True
+                logger.warning(
+                    "%s (consecutive=%d): %s", type(exc).__name__, consecutive_failures, exc
                 )
                 if consecutive_failures > max_consecutive_failures:
                     raise
@@ -142,7 +147,7 @@ def embed_pending_chunks(
                 register_vector(conn)
             except VOYAGE_RETRYABLE_ERRORS as exc:
                 consecutive_failures += 1
-                print(f"Voyage API error (consecutive={consecutive_failures}): {exc}", flush=True)
+                logger.warning("Voyage API error (consecutive=%d): %s", consecutive_failures, exc)
                 if consecutive_failures > max_consecutive_failures:
                     raise
                 time.sleep(RETRY_BACKOFF_SECONDS)
@@ -159,8 +164,11 @@ def _main() -> None:
 
     client = get_voyage_client()
     embedded = embed_pending_chunks(get_connection, client, model=args.model)
-    print(f"Embedded {embedded} chunk(s) using {args.model}")
+    logger.info("Embedded %d chunk(s) using %s", embedded, args.model)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     _main()

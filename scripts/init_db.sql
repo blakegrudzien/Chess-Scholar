@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS games (
     year INTEGER,
     eco_code TEXT,
     result TEXT,
-    source TEXT  -- 'chessbase' | 'lichess'
+    source TEXT CHECK (source IN ('chessbase', 'lichess'))
 );
 
 CREATE TABLE IF NOT EXISTS moves (
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS moves (
 CREATE TABLE IF NOT EXISTS chunks (
     chunk_id SERIAL PRIMARY KEY,
     chunk_hash TEXT NOT NULL UNIQUE,  -- content hash; natural key for idempotent loads
-    source_type TEXT NOT NULL,   -- 'game_annotation' | 'book'
+    source_type TEXT NOT NULL CHECK (source_type IN ('game_annotation', 'book')),
     game_id TEXT,                -- nullable, populated for game_annotation chunks
     source_title TEXT,
     author TEXT,
@@ -39,14 +39,6 @@ CREATE TABLE IF NOT EXISTS chunks (
     ply_or_page TEXT,
     text TEXT NOT NULL,
     embedding VECTOR(1024)  -- voyage-4 / voyage-4-lite default dimension
-);
-
-CREATE TABLE IF NOT EXISTS opening_notes (
-    note_id SERIAL PRIMARY KEY,
-    eco_code TEXT,
-    opening_name TEXT,
-    note_text TEXT,
-    updated_at TIMESTAMP DEFAULT now()
 );
 
 -- Indexes for Layer 1 structured search

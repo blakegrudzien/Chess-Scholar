@@ -1,7 +1,16 @@
 from unittest.mock import MagicMock, patch
 
+import psycopg2.pool
+import pytest
+
 from src.ingestion.annotation_extractor import AnnotationChunk
-from src.ingestion.db_loader import get_connection, load_chunks, load_games
+from src.ingestion.db_loader import (
+    DatabaseBusyError,
+    get_connection,
+    get_connection_with_timeout,
+    load_chunks,
+    load_games,
+)
 from src.ingestion.pgn_parser import GameRecord, MoveRecord
 
 
@@ -197,6 +206,25 @@ def test_load_chunks_hash_is_deterministic_across_calls():
     assert first_hash == second_hash
 
 
+def test_load_chunks_rejects_a_field_containing_the_delimiter():
+    # Same reasoning as pgn_parser's compute_game_id: a "|" inside a field
+    # could shift where the joined fields appear to divide, letting two
+    # different chunks hash the same and silently dropping one.
+    chunk = AnnotationChunk(
+        source_type="game_annotation",
+        game_id="abc123",
+        source_title=None,
+        author="Weird|Author",
+        year=2021,
+        eco_code="C00",
+        ply_or_page="8",
+        text="Bxb4!?: Accepting the gambit.",
+    )
+    conn = MagicMock()
+    with pytest.raises(ValueError, match=r"\|"):
+        load_chunks([chunk], conn)
+
+
 def test_load_chunks_skips_insert_when_no_chunks():
     conn = MagicMock()
     with patch("src.ingestion.db_loader.execute_values") as mock_execute_values:
@@ -237,3 +265,43 @@ def test_load_chunks_flushes_in_batches():
     assert chunks_inserted == 5
     assert mock_execute_values.call_count == 3  # batches of 2, 2, 1
     assert conn.commit.call_count == 3
+
+
+def test_get_connection_with_timeout_returns_immediately_when_available():
+    db_pool = MagicMock()
+    conn = MagicMock()
+    db_pool.getconn.return_value = conn
+
+    result = get_connection_with_timeout(db_pool)
+
+    assert result is conn
+    db_pool.getconn.assert_called_once()
+
+
+def test_get_connection_with_timeout_retries_until_a_connection_frees_up():
+    db_pool = MagicMock()
+    conn = MagicMock()
+    db_pool.getconn.side_effect = [psycopg2.pool.PoolError("exhausted"), conn]
+
+    with patch("src.ingestion.db_loader.DB_POOL_CHECKOUT_POLL_INTERVAL_SECONDS", 0):
+        result = get_connection_with_timeout(db_pool)
+
+    assert result is conn
+    assert db_pool.getconn.call_count == 2
+
+
+def test_get_connection_with_timeout_gives_up_after_the_wait_budget():
+    db_pool = MagicMock()
+    db_pool.getconn.side_effect = psycopg2.pool.PoolError("exhausted")
+
+    # Shrink both constants so this test doesn't actually wait 2 real
+    # seconds -- it's the retry-then-give-up behavior under test, not the
+    # specific timeout value.
+    with (
+        patch("src.ingestion.db_loader.DB_POOL_CHECKOUT_TIMEOUT_SECONDS", 0.05),
+        patch("src.ingestion.db_loader.DB_POOL_CHECKOUT_POLL_INTERVAL_SECONDS", 0.01),
+        pytest.raises(DatabaseBusyError),
+    ):
+        get_connection_with_timeout(db_pool)
+
+    assert db_pool.getconn.call_count > 1  # confirms it actually retried, not just tried once
