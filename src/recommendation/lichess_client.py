@@ -32,6 +32,30 @@ RATE_LIMIT_BACKOFF_SECONDS = 60
 MAX_RATE_LIMIT_RETRIES = 3
 
 
+class RequestPacer:
+    """Enforces REQUEST_PACING_SECONDS between consecutive requests to
+    lichess.org, regardless of which caller issues them.
+
+    Pulled out of LichessClient so lichess_scraper.py (a separate module by
+    design -- see its docstring) can share the exact same courtesy behavior
+    against the same host without duplicating the algorithm. Composition
+    over inheritance: the scraper and the API client have no "is-a"
+    relationship, they just both need this one piece of behavior, so each
+    holds an instance rather than sharing a base class built for it.
+    """
+
+    def __init__(self) -> None:
+        self._last_request_at: float | None = None
+
+    def wait(self) -> None:
+        if self._last_request_at is not None:
+            elapsed = time.monotonic() - self._last_request_at
+            remaining = REQUEST_PACING_SECONDS - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+        self._last_request_at = time.monotonic()
+
+
 class LichessClient:
     """A connection to Lichess's API, reused across calls so request pacing
     (see _pace) applies across the whole session, not just within one call.
@@ -41,9 +65,17 @@ class LichessClient:
     elsewhere in this project for their own external resources.
     """
 
-    def __init__(self, http_client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        http_client: httpx.Client | None = None,
+        pacer: RequestPacer | None = None,
+    ) -> None:
         self._http = http_client or httpx.Client(base_url=LICHESS_BASE_URL, timeout=30.0)
-        self._last_request_at: float | None = None
+        # Accepts an external pacer so a caller making both API and scraper
+        # requests in the same run (see collect_study_candidates.py) can
+        # share one rate limit across both instead of each object enforcing
+        # its own, independent 1-request-per-second ceiling.
+        self._pacer = pacer or RequestPacer()
 
     def __enter__(self) -> LichessClient:
         return self
@@ -59,19 +91,6 @@ class LichessClient:
     def close(self) -> None:
         self._http.close()
 
-    def _pace(self) -> None:
-        """Block if needed so consecutive requests are at least
-        REQUEST_PACING_SECONDS apart, regardless of which method issues
-        them -- pacing belongs to the client's request history as a whole,
-        not to any one endpoint.
-        """
-        if self._last_request_at is not None:
-            elapsed = time.monotonic() - self._last_request_at
-            remaining = REQUEST_PACING_SECONDS - elapsed
-            if remaining > 0:
-                time.sleep(remaining)
-        self._last_request_at = time.monotonic()
-
     def fetch_study_pgn(self, study_id: str) -> str:
         """Fetch an entire study (every chapter) as PGN, comments included.
 
@@ -80,7 +99,7 @@ class LichessClient:
         retrying forever against a service that's telling us to stop.
         """
         for attempt in range(MAX_RATE_LIMIT_RETRIES):
-            self._pace()
+            self._pacer.wait()
             response = self._http.get(f"/api/study/{study_id}.pgn")
             if response.status_code == 429:
                 if attempt == MAX_RATE_LIMIT_RETRIES - 1:
@@ -111,7 +130,7 @@ class LichessClient:
         means a caller asking for "the first handful" isn't forced to wait
         for or buffer someone's entire study history first.
         """
-        self._pace()
+        self._pacer.wait()
         count = 0
         with self._http.stream("GET", f"/api/study/by/{username}") as response:
             response.raise_for_status()

@@ -25,6 +25,9 @@ dependencies = [
                                # though anthropic already pulls it in transitively -- code that
                                # imports httpx directly should not rely on another package's
                                # dependency tree to keep it available)
+    "beautifulsoup4>=4.12",   # parses Lichess's study-listing HTML (no API covers it) --
+                               # hand-rolled regex/string parsing of nested, attribute-bearing
+                               # HTML is a well-known reliability trap, so this uses a real parser
 ]
 
 [project.optional-dependencies]
