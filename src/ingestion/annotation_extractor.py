@@ -67,7 +67,7 @@ def _nags_to_prose(nags: set[int]) -> str:
 _PGN_GLYPH_RE = re.compile(r"\[%[^\]]*\]")
 
 
-def _strip_computer_glyphs(comment: str) -> str:
+def strip_computer_glyphs(comment: str) -> str:
     """Remove GUI-only annotation glyphs (eval curves, clocks, arrows, square
     highlights); they aren't meaningful text for RAG embedding.
     """
@@ -75,7 +75,7 @@ def _strip_computer_glyphs(comment: str) -> str:
     return re.sub(r"\s+", " ", without_glyphs).strip()
 
 
-def _iter_plies_with_comments(
+def iter_plies_with_comments(
     game: chess.pgn.Game,
 ) -> Iterator[tuple[int, str, str, set[int]]]:
     """Walk one parsed chapter/game's mainline, yielding
@@ -97,7 +97,7 @@ def _iter_plies_with_comments(
         move = node.move
         move_san = board.san(move)
         board.push(move)
-        yield ply, move_san, _strip_computer_glyphs(node.comment), node.nags
+        yield ply, move_san, strip_computer_glyphs(node.comment), node.nags
 
 
 def _move_label(move_san: str, nags: set[int]) -> str:
@@ -117,11 +117,11 @@ def extract_chapter_comment_text(game: chess.pgn.Game) -> str:
     prose, not a game_id to join chunks back to a games row.
     """
     lines = []
-    pre_game_comment = _strip_computer_glyphs(game.comment)
+    pre_game_comment = strip_computer_glyphs(game.comment)
     if pre_game_comment:
         lines.append(pre_game_comment)
 
-    for _, move_san, comment, nags in _iter_plies_with_comments(game):
+    for _, move_san, comment, nags in iter_plies_with_comments(game):
         if not comment:
             continue
         lines.append(f"{_move_label(move_san, nags)}: {comment}")
@@ -136,11 +136,11 @@ def _extract_game_annotations(
     year = parse_year(headers.get("Date"))
     eco_code = headers.get("ECO")
 
-    ply_annotations = list(_iter_plies_with_comments(game))
+    ply_annotations = list(iter_plies_with_comments(game))
     move_sans = [move_san for _, move_san, _, _ in ply_annotations]
     game_id = compute_game_id(headers, move_sans)
 
-    pre_game_comment = _strip_computer_glyphs(game.comment)
+    pre_game_comment = strip_computer_glyphs(game.comment)
     if pre_game_comment:
         yield AnnotationChunk(
             source_type="game_annotation",

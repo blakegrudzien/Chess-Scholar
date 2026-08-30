@@ -20,7 +20,6 @@ collect_study_candidates.py does):
 
 from __future__ import annotations
 
-import io
 import json
 import sys
 from datetime import UTC, datetime
@@ -28,10 +27,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import chess.pgn  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from src.ingestion.annotation_extractor import extract_chapter_comment_text  # noqa: E402
+from src.recommendation.study_pgn import iter_study_chapters  # noqa: E402
 
 CANDIDATES_PATH = Path("data/processed/study_candidates.jsonl")
 LABELS_PATH = Path("data/processed/study_labels.jsonl")
@@ -84,20 +83,12 @@ def _build_comment_preview(pgn_text: str) -> str:
     without leaving the app. Cached on the PGN text itself (not study_id)
     since that's the actual input the parse depends on.
 
-    A chapter that fails to parse is reported inline rather than raised --
-    one malformed chapter in an otherwise-fine study shouldn't block
-    labeling the rest of it.
+    iter_study_chapters silently stops at the first chapter it can't parse
+    rather than raising, so a malformed chapter just means a shorter
+    preview here, not a crashed page.
     """
     sections = []
-    stream = io.StringIO(pgn_text)
-    while True:
-        try:
-            game = chess.pgn.read_game(stream)
-        except Exception as exc:
-            sections.append(f"(failed to parse a chapter: {exc})")
-            break
-        if game is None:
-            break
+    for game in iter_study_chapters(pgn_text):
         title = game.headers.get("ChapterName") or game.headers.get("Event") or "Untitled"
         text = extract_chapter_comment_text(game).strip()
         sections.append(f"## {title}\n{text}" if text else f"## {title}\n_(no comments)_")
