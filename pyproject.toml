@@ -21,6 +21,10 @@ dependencies = [
     "streamlit>=1.38",
     "python-dotenv>=1.0",
     "pydantic>=2.8",
+    "httpx>=0.27",            # direct HTTP calls to the Lichess API (declared explicitly even
+                               # though anthropic already pulls it in transitively -- code that
+                               # imports httpx directly should not rely on another package's
+                               # dependency tree to keep it available)
 ]
 
 [project.optional-dependencies]
