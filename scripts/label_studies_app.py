@@ -1,5 +1,5 @@
 """Streamlit review tool for hand-labeling the study candidates collected by
-collect_study_candidates.py (Step 3 of the recommendation-feature roadmap).
+collect_study_candidates.py.
 
 Reads data/processed/study_candidates.jsonl, shows one not-yet-labeled study
 at a time with a readable preview of its annotations, and appends each

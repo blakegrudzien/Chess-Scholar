@@ -1,5 +1,5 @@
 """Collect a raw pool of Lichess studies for the recommendation feature's
-quality-classifier labeling step (Step 2 of the recommendation roadmap).
+quality-classifier labeling step.
 
 Pulls from Lichess listing sorts to get contrast in the pool the user will
 hand-label from:

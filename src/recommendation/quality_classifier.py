@@ -1,7 +1,7 @@
-"""Quality classifier for the study recommendation feature (Step 5 of the
-recommendation roadmap): given a candidate's structural features
-(feature_extraction.py), predict how likely a human labeler would be to
-mark it "recommend" rather than "reject."
+"""Quality classifier for the study recommendation feature: given a
+candidate's structural features (feature_extraction.py), predict how
+likely a human labeler would be to mark it "recommend" rather than
+"reject."
 
 Scope note: trained only on drill/concept-genre labels, not narrative.
 Every one of the 21 narrative-genre labels in study_labels.jsonl came back

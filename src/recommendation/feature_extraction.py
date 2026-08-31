@@ -1,5 +1,5 @@
 """Turn one collected study candidate into a fixed-size numeric feature
-vector for the quality classifier (Step 5 of the recommendation roadmap).
+vector for the quality classifier.
 
 Deliberately structural/text-statistics features only, computed from a
 study's own PGN content and scraped listing metadata -- not embeddings, and
@@ -15,8 +15,8 @@ is small -- on the order of a hundred examples, hand-labeled by one person.
 A high-dimensional representation fed to a classical model that size would
 mostly memorize noise; a small, well-chosen feature set is the amount of
 model capacity that much data can actually support. This is the standard
-bias-variance argument for classical ML: capacity should track the data you
-have, not the data you wish you had.
+bias-variance argument for classical ML: capacity should track the size of
+the available data, not the size one might eventually want.
 """
 
 from __future__ import annotations

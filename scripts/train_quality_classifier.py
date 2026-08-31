@@ -1,5 +1,4 @@
-"""Train and evaluate the study quality classifier (Step 5 of the
-recommendation roadmap).
+"""Train and evaluate the study quality classifier.
 
 Compares two candidate models via 5-fold cross-validation on the labeled
 dataset (drill/concept genres only -- see quality_classifier.py's module

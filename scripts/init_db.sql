@@ -41,6 +41,28 @@ CREATE TABLE IF NOT EXISTS chunks (
     embedding VECTOR(1024)  -- voyage-4 / voyage-4-lite default dimension
 );
 
+-- Recommendation feature: quality-passing Lichess study candidates, ready
+-- for embedding similarity search. Populated by scripts/build_study_index.py,
+-- not by ingestion -- title/likes are duplicated from the (gitignored, local-
+-- only) study_candidates.jsonl file so the deployed app is fully
+-- self-sufficient from this table alone, the same reason models/*.joblib is
+-- committed rather than regenerated at deploy time.
+--
+-- No IVFFlat index here, unlike chunks.embedding -- IVFFlat is an
+-- approximate index that only pays for itself at real scale (thousands of
+-- rows); at the row counts this table will actually hold (tens to low
+-- hundreds), a plain `ORDER BY embedding <=> query LIMIT k` exact scan is
+-- both simpler and faster. See chunks.embedding's own comment below for the
+-- concrete failure mode this avoids repeating.
+CREATE TABLE IF NOT EXISTS lichess_study_cache (
+    study_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    likes INTEGER NOT NULL,
+    quality_probability REAL NOT NULL,
+    embedding VECTOR(1024) NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Indexes for Layer 1 structured search
 CREATE INDEX IF NOT EXISTS idx_games_eco ON games(eco_code);
 CREATE INDEX IF NOT EXISTS idx_games_year ON games(year);
