@@ -28,6 +28,11 @@ dependencies = [
     "beautifulsoup4>=4.12",   # parses Lichess's study-listing HTML (no API covers it) --
                                # hand-rolled regex/string parsing of nested, attribute-bearing
                                # HTML is a well-known reliability trap, so this uses a real parser
+    "scikit-learn>=1.4",      # quality classifier: logistic regression / gradient boosting +
+                               # cross-validation for the study recommendation feature
+    "joblib>=1.3",            # serializes the fitted classifier pipeline to disk -- declared
+                               # explicitly even though scikit-learn pulls it in transitively,
+                               # since this code imports it directly (same reasoning as httpx)
 ]
 
 [project.optional-dependencies]
