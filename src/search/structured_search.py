@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+import chess
+import chess.pgn
 import psycopg2.extensions
 
 Color = Literal["white", "black", "both"]
@@ -37,6 +39,18 @@ class SquareFrequency:
 class MoveFrequency:
     move_san: str
     count: int
+
+
+@dataclass
+class NarrativeGameCandidate:
+    game_id: str
+    white: str | None
+    black: str | None
+    event: str | None
+    year: int | None
+    eco_code: str | None
+    result: str | None
+    annotation_chunk_count: int
 
 
 def _piece_match_clause(piece: str, color: Color) -> tuple[str, str]:
@@ -148,3 +162,110 @@ def common_moves_at_ply(
         rows = cur.fetchall()
 
     return [MoveFrequency(move_san=move_san, count=count) for move_san, count in rows]
+
+
+def select_narrative_game(
+    conn: psycopg2.extensions.connection, eco_codes: list[str]
+) -> NarrativeGameCandidate | None:
+    """Pick one ChessBase-sourced game to show, moves only, for the
+    "narrative" lane of the study recommendation feature -- a different
+    source than the other two recommendation lanes (drill/concept), which
+    draw from the Lichess-backed quality-classifier cascade. This lane
+    instead draws from the corpus's own already-curated master games,
+    stripped down to just the moves (see game_moves_as_pgn): a game's move
+    sequence is historical fact, not the copyrightable part of a ChessBase
+    export, so nothing here needs the classifier pipeline's licensing care.
+
+    Restricted to source = 'chessbase': that's this project's only source
+    of GM-level annotated games (see CLAUDE.md). Rows with source =
+    'lichess' in the same table are raw volume data for Layer 1 stats, not
+    necessarily GM games, and aren't what this lane is for.
+
+    Among games matching any of eco_codes, prefers the one with the most
+    game_annotation chunks originally attached: the original annotator
+    judging a game worth explaining at length is a real notability signal,
+    even though none of that text is ever shown here -- only the moves are.
+    Returns None if no chessbase game matches any of the given codes.
+    """
+    if not eco_codes:
+        raise ValueError("eco_codes must be non-empty")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT g.game_id, g.white, g.black, g.event, g.year, g.eco_code,
+                   g.result, count(c.game_id) AS annotation_chunk_count
+            FROM games g
+            LEFT JOIN chunks c
+              ON c.game_id = g.game_id AND c.source_type = 'game_annotation'
+            WHERE g.source = 'chessbase' AND g.eco_code = ANY(%s)
+            GROUP BY g.game_id, g.white, g.black, g.event, g.year, g.eco_code, g.result
+            ORDER BY annotation_chunk_count DESC, g.game_id
+            LIMIT 1
+            """,
+            (eco_codes,),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        return None
+    game_id, white, black, event, year, eco_code, result, chunk_count = row
+    return NarrativeGameCandidate(
+        game_id=game_id,
+        white=white,
+        black=black,
+        event=event,
+        year=year,
+        eco_code=eco_code,
+        result=result,
+        annotation_chunk_count=chunk_count,
+    )
+
+
+def game_moves_as_pgn(conn: psycopg2.extensions.connection, game_id: str) -> str | None:
+    """Reconstruct a complete, valid PGN document for one game directly
+    from games + moves: headers plus movetext in SAN, deliberately no
+    comments or NAGs. That's true by construction, not just by omission --
+    moves has no annotation column at all (annotations live only in
+    chunks, a separate table this never touches), so there's nothing to
+    accidentally include.
+
+    Built via chess.pgn.Game and python-chess's own serializer rather than
+    formatting header strings by hand, so header values are escaped
+    correctly (e.g. a player name containing a quote character) instead of
+    risking malformed PGN from a naive f-string.
+
+    Returns None if game_id doesn't exist.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT white, black, event, year, eco_code, result FROM games WHERE game_id = %s",
+            (game_id,),
+        )
+        header_row = cur.fetchone()
+        if header_row is None:
+            return None
+        white, black, event, year, eco_code, result = header_row
+
+        cur.execute(
+            "SELECT move_san FROM moves WHERE game_id = %s ORDER BY ply",
+            (game_id,),
+        )
+        move_sans = [row[0] for row in cur.fetchall()]
+
+    game = chess.pgn.Game()
+    game.headers["Event"] = event or "?"
+    game.headers["White"] = white or "?"
+    game.headers["Black"] = black or "?"
+    game.headers["Date"] = f"{year}.??.??" if year else "????.??.??"
+    game.headers["Result"] = result or "*"
+    if eco_code:
+        game.headers["ECO"] = eco_code
+
+    node = game
+    board = chess.Board()
+    for san in move_sans:
+        move = board.parse_san(san)
+        node = node.add_variation(move)
+        board.push(move)
+
+    return str(game)

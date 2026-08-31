@@ -8,7 +8,9 @@ from src.search.structured_search import (
     SquareFrequency,
     common_moves_at_ply,
     eco_summary,
+    game_moves_as_pgn,
     piece_placement_frequency,
+    select_narrative_game,
 )
 
 TEST_DB = "chess_rag_structured_search_test"
@@ -26,6 +28,16 @@ GAME_B = (
 GAME_C = (
     '[Event "C"]\n[Date "2019.01.01"]\n[White "Eve"]\n[Black "Frank"]\n'
     '[Result "1/2-1/2"]\n[ECO "D10"]\n\n1. d4 d5 2. c4 c6 3. Nf3 Nf6 1/2-1/2\n'
+)
+# Both chessbase-sourced (A/B/C above are source="test"), both C50, so the
+# narrative-game tests can assert selection prefers the more-annotated one.
+GAME_D = (
+    '[Event "D"]\n[Date "2018.01.01"]\n[White "Grace"]\n[Black "Heidi"]\n'
+    '[Result "1-0"]\n[ECO "C60"]\n\n1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 1-0\n'
+)
+GAME_E = (
+    '[Event "E"]\n[Date "2017.01.01"]\n[White "Ivan"]\n[Black "Judy"]\n'
+    '[Result "0-1"]\n[ECO "C60"]\n\n1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 0-1\n'
 )
 
 
@@ -66,6 +78,20 @@ def conn(tmp_path_factory):
                 PRIMARY KEY (game_id, ply)
             )
         """)
+        # Simplified vs. the real chunks table (no embedding column, no
+        # source_type CHECK constraint) -- these tests only ever query
+        # game_id and source_type, and skipping embedding avoids requiring
+        # the pgvector extension in a test database that doesn't need it.
+        cur.execute("""
+            CREATE TABLE chunks (
+                chunk_id SERIAL PRIMARY KEY,
+                chunk_hash TEXT NOT NULL UNIQUE,
+                source_type TEXT NOT NULL,
+                game_id TEXT,
+                year INTEGER NOT NULL,
+                text TEXT NOT NULL
+            )
+        """)
     test_conn.commit()
 
     tmp_dir = tmp_path_factory.mktemp("pgn")
@@ -73,6 +99,27 @@ def conn(tmp_path_factory):
         path = tmp_dir / name
         path.write_text(text, encoding="utf-8")
         load_games(parse_pgn(path, source="test"), test_conn)
+
+    # D and E are the only source="chessbase" games -- select_narrative_game
+    # filters to that source, so A/B/C (source="test") must never match.
+    for name, text in [("d.pgn", GAME_D), ("e.pgn", GAME_E)]:
+        path = tmp_dir / name
+        path.write_text(text, encoding="utf-8")
+        load_games(parse_pgn(path, source="chessbase"), test_conn)
+
+    with test_conn.cursor() as cur:
+        cur.execute("SELECT event, game_id FROM games WHERE source = 'chessbase'")
+        game_id_by_event = dict(cur.fetchall())
+        # Two annotation chunks on D, zero on E: D should win the C50 match.
+        cur.executemany(
+            "INSERT INTO chunks (chunk_hash, source_type, game_id, year, text) "
+            "VALUES (%s, 'game_annotation', %s, 2018, %s)",
+            [
+                ("chunk-d-1", game_id_by_event["D"], "Note 1"),
+                ("chunk-d-2", game_id_by_event["D"], "Note 2"),
+            ],
+        )
+    test_conn.commit()
 
     yield test_conn
 
@@ -150,3 +197,51 @@ def test_common_moves_at_ply_breaks_ties_alphabetically(conn):
     # Ply 6 diverges: game A plays Bc5, game B plays Nf6 -- tied at count 1.
     result = common_moves_at_ply(conn, "C50", 6)
     assert result == [MoveFrequency("Bc5", 1), MoveFrequency("Nf6", 1)]
+
+
+def test_select_narrative_game_prefers_more_annotated_game(conn):
+    # D and E are both chessbase-sourced C60 games; only D has chunks.
+    candidate = select_narrative_game(conn, ["C60"])
+    assert candidate is not None
+    assert candidate.event == "D"
+    assert candidate.annotation_chunk_count == 2
+
+
+def test_select_narrative_game_excludes_non_chessbase_source(conn):
+    # A and B (source="test") are C50, not C60, so they can't leak into a
+    # C60 query -- this specifically checks the *other* filter, source:
+    # querying A/B's own C50 code must find nothing, since no chessbase
+    # game exists at C50 (only D/E at C60 are chessbase-sourced).
+    assert select_narrative_game(conn, ["C50"]) is None
+
+
+def test_select_narrative_game_no_chessbase_match_returns_none(conn):
+    # C is D10 but source="test"; no chessbase game exists for D10.
+    assert select_narrative_game(conn, ["D10"]) is None
+
+
+def test_select_narrative_game_unknown_eco_returns_none(conn):
+    assert select_narrative_game(conn, ["Z99"]) is None
+
+
+def test_select_narrative_game_rejects_empty_eco_list(conn):
+    with pytest.raises(ValueError):
+        select_narrative_game(conn, [])
+
+
+def test_game_moves_as_pgn_contains_headers_and_moves_no_comments(conn):
+    candidate = select_narrative_game(conn, ["C60"])
+    assert candidate is not None
+    pgn_text = game_moves_as_pgn(conn, candidate.game_id)
+    assert pgn_text is not None
+
+    assert '[White "Grace"]' in pgn_text
+    assert '[Black "Heidi"]' in pgn_text
+    assert '[ECO "C60"]' in pgn_text
+    assert "1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6" in pgn_text
+    assert "1-0" in pgn_text
+    assert "{" not in pgn_text  # no PGN comments anywhere
+
+
+def test_game_moves_as_pgn_unknown_game_id_returns_none(conn):
+    assert game_moves_as_pgn(conn, "does-not-exist") is None

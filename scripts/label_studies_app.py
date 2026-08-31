@@ -36,6 +36,16 @@ CANDIDATES_PATH = Path("data/processed/study_candidates.jsonl")
 LABELS_PATH = Path("data/processed/study_labels.jsonl")
 
 GENRE_OPTIONS = ["drill", "concept", "narrative"]
+# Captured alongside genre, not as a genre of its own: the 3-way
+# drill/concept/narrative split stays the user-facing recommendation
+# taxonomy (unchanged), but within it an opening repertoire and an endgame
+# study can have very different structural shapes (chapter count, comment
+# length) despite both being "concept." Without this, the quality
+# classifier (Step 5) has no way to tell "terse because it's an endgame
+# study" from "terse because it's low effort" -- it only sees the 11
+# structural numbers in feature_extraction.py, nothing chess-semantic, so
+# it can only learn whatever correlation actually shows up in the labels.
+PHASE_OPTIONS = ["opening", "middlegame", "endgame", "general"]
 QUALITY_OPTIONS = ["recommend", "reject"]
 
 
@@ -140,19 +150,21 @@ def main() -> None:
     st.divider()
     with st.form(key=f"label_form_{study_id}"):
         genre = st.radio("Genre", GENRE_OPTIONS, index=None, horizontal=True)
+        phase = st.radio("Game phase", PHASE_OPTIONS, index=None, horizontal=True)
         quality = st.radio("Quality", QUALITY_OPTIONS, index=None, horizontal=True)
         note = st.text_area("Note (optional)")
         submitted = st.form_submit_button("Submit label")
 
     if submitted:
-        if genre is None or quality is None:
-            st.warning("Pick both a genre and a quality before submitting.")
+        if genre is None or phase is None or quality is None:
+            st.warning("Pick a genre, game phase, and quality before submitting.")
         else:
             _append_label(
                 LABELS_PATH,
                 {
                     "study_id": study_id,
                     "genre": genre,
+                    "phase": phase,
                     "quality": quality,
                     "note": note,
                     "skipped": False,
