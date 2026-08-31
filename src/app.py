@@ -35,6 +35,11 @@ from src.engine.engine_pool import EnginePool  # noqa: E402
 from src.engine.stockfish_eval import get_engine_path  # noqa: E402
 from src.ingestion.db_loader import get_connection_pool  # noqa: E402
 from src.ingestion.pgn_parser import parse_pgn  # noqa: E402
+from src.recommendation.pipeline import (  # noqa: E402
+    ChessbaseGameRecommendation,
+    LichessStudyRecommendation,
+    recommend_resources,
+)
 
 # CPU-bound: each concurrent evaluation pins a core for the search duration,
 # so this is sized to the deployment's compute, not to how many users we'd
@@ -55,17 +60,18 @@ st.set_page_config(page_title="Chess RAG Assistant", layout="wide")
 # Portfolio demo backed by a personal ChessBase export; keep it out of search
 # engine indexes rather than relying on the URL being merely unlisted.
 # st.markdown's unsafe_allow_html doesn't execute <script> tags (React sets
-# innerHTML), so this goes through components.html's sandboxed iframe instead.
-# That iframe is nested one level inside Streamlit's own app frame, so
-# window.top (not window.parent) is needed to reach the real top document.
-st.components.v1.html(
+# innerHTML), so this goes through st.html's explicit script-execution opt-in
+# instead, rendered inside a sandboxed iframe nested one level inside
+# Streamlit's own app frame -- window.top (not window.parent) is needed to
+# reach the real top document.
+st.html(
     """<script>
     var meta = window.top.document.createElement('meta');
     meta.name = 'robots';
     meta.content = 'noindex, nofollow';
     window.top.document.head.appendChild(meta);
     </script>""",
-    height=0,
+    unsafe_allow_javascript=True,
 )
 
 
@@ -162,6 +168,50 @@ def _ask_with_status(question: str) -> str:
     return answer
 
 
+def _render_resource_recommendations() -> None:
+    """Offers to look up related Lichess studies and corpus games for the
+    most recent question, and renders whatever comes back.
+
+    Only ever shown for the latest exchange, not every past one in the
+    history -- keeps the UI focused on what is actually in view rather than
+    accumulating a lookup button per message.
+
+    st.session_state.resource_recommendations is the sentinel for "already
+    looked up this question": None means not yet requested (show the
+    button), a list (possibly empty, meaning nothing was relevant) means it
+    has been. Reset to None right after a new answer is appended in
+    render_chat_tab, so a fresh question always gets a fresh button.
+    """
+    history = st.session_state.chat_history
+    if len(history) < 2 or history[-1][0] != "assistant":
+        return
+    question = history[-2][1]
+
+    if st.session_state.resource_recommendations is None:
+        if not st.button("Find related resources", key="find_resources"):
+            return
+        with st.spinner("Looking for related studies and games..."):
+            st.session_state.resource_recommendations = recommend_resources(
+                question, _get_db_pool(), _get_voyage(), client=_get_anthropic_client()
+            )
+
+    recommendations = st.session_state.resource_recommendations
+    if not recommendations:
+        st.caption("No specifically relevant resources found for this question.")
+        return
+
+    for rec in recommendations:
+        if isinstance(rec, LichessStudyRecommendation):
+            st.markdown(f"**{rec.study_title}** -- {rec.chapter_name}")
+            st.caption(rec.blurb)
+            st.iframe(rec.embed_url, height=400)
+        elif isinstance(rec, ChessbaseGameRecommendation):
+            st.markdown(f"**{rec.white} vs {rec.black}** ({rec.event})")
+            st.caption(rec.blurb)
+            st.caption("From the local corpus, moves only -- no commentary included.")
+            st.code(rec.pgn, language=None)
+
+
 def render_chat_tab() -> None:
     st.caption(
         "Answers synthesize retrieved human commentary and engine output -- "
@@ -169,6 +219,8 @@ def render_chat_tab() -> None:
     )
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
+    if "resource_recommendations" not in st.session_state:
+        st.session_state.resource_recommendations = None
 
     for role, content in st.session_state.chat_history:
         with st.chat_message(role):
@@ -182,6 +234,9 @@ def render_chat_tab() -> None:
         with st.chat_message("assistant"):
             answer = _ask_with_status(question)
         st.session_state.chat_history.append(("assistant", answer))
+        st.session_state.resource_recommendations = None
+
+    _render_resource_recommendations()
 
 
 def handle_square_click(square: chess.Square) -> None:

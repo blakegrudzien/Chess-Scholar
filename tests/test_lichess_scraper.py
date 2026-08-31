@@ -1,3 +1,4 @@
+import json
 from unittest.mock import patch
 
 import httpx
@@ -6,6 +7,8 @@ import pytest
 from src.recommendation.lichess_scraper import (
     STUDIES_PER_PAGE,
     ScrapedStudyCard,
+    StudyChapter,
+    fetch_study_chapters,
     iter_studies_by_sort,
 )
 
@@ -143,3 +146,59 @@ def test_iter_studies_by_sort_skips_a_malformed_card_without_failing_the_page():
             results = list(iter_studies_by_sort("updated", http_client=http_client))
 
     assert [r.study_id for r in results] == ["good1"]
+
+
+def _study_page_html(chapters: list[dict]) -> str:
+    """A minimal page matching the real structure verified live: a
+    `<script type="application/json" id="page-init-data">` block holding
+    study.chapters, surrounded by markup this scraper never reads.
+    """
+    payload = json.dumps({"study": {"id": "abc123", "chapters": chapters}})
+    script = f'<script type="application/json" id="page-init-data">{payload}</script>'
+    return f"<html><body>{script}</body></html>"
+
+
+def test_fetch_study_chapters_parses_id_and_name():
+    page = _study_page_html(
+        [
+            {"id": "gIOq5Mk2", "name": "Introduction", "orientation": "black"},
+            {"id": "BYjz8j5O", "name": "Main Line", "orientation": "black"},
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/study/abc123"
+        return httpx.Response(200, text=page)
+
+    with patch("src.recommendation.lichess_client.REQUEST_PACING_SECONDS", 0):
+        with _client_with_handler(handler) as http_client:
+            chapters = fetch_study_chapters("abc123", http_client=http_client)
+
+    assert chapters == [
+        StudyChapter(chapter_id="gIOq5Mk2", name="Introduction"),
+        StudyChapter(chapter_id="BYjz8j5O", name="Main Line"),
+    ]
+
+
+def test_fetch_study_chapters_returns_empty_list_when_data_block_missing():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html><body>no data here</body></html>")
+
+    with patch("src.recommendation.lichess_client.REQUEST_PACING_SECONDS", 0):
+        with _client_with_handler(handler) as http_client:
+            chapters = fetch_study_chapters("abc123", http_client=http_client)
+
+    assert chapters == []
+
+
+def test_fetch_study_chapters_returns_empty_list_on_malformed_json():
+    page = '<script type="application/json" id="page-init-data">{not valid json</script>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=page)
+
+    with patch("src.recommendation.lichess_client.REQUEST_PACING_SECONDS", 0):
+        with _client_with_handler(handler) as http_client:
+            chapters = fetch_study_chapters("abc123", http_client=http_client)
+
+    assert chapters == []

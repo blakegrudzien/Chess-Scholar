@@ -23,6 +23,7 @@ scroll for this same listing.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -145,6 +146,61 @@ def iter_studies_by_sort(
             if len(cards) < STUDIES_PER_PAGE:
                 return
             page += 1
+    finally:
+        if owns_client:
+            client.close()
+
+
+@dataclass(frozen=True)
+class StudyChapter:
+    chapter_id: str
+    name: str
+
+
+def fetch_study_chapters(
+    study_id: str,
+    *,
+    http_client: httpx.Client | None = None,
+    pacer: RequestPacer | None = None,
+) -> list[StudyChapter]:
+    """Fetch the chapter list (id and name) for one study.
+
+    Neither Lichess's documented API nor the PGN export
+    (lichess_client.fetch_study_pgn) exposes chapter ids -- the PGN's
+    per-chapter [Event] header carries only the chapter name. This instead
+    reads the plain study page (lichess.org/study/{study_id}), which
+    server-renders a `<script type="application/json" id="page-init-data">`
+    block containing the same data the page's own JavaScript bootstraps
+    from, including a full study.chapters list with real ids. No
+    authentication or websocket connection needed -- confirmed live against
+    a real study, whose 10 chapters (Introduction, Standart Scheme, Dragon
+    Accelerated, ...) all appeared with distinct 8-character ids in that
+    one block.
+
+    Returns an empty list if the page doesn't have the expected data block
+    (unexpected markup, private/deleted study) rather than raising --
+    a caller resolving a chapter for an embed URL should treat "unknown"
+    the same as "couldn't determine one," not crash the whole request.
+    """
+    owns_client = http_client is None
+    client = http_client or httpx.Client(base_url=LICHESS_BASE_URL, timeout=30.0)
+    pacer = pacer or RequestPacer()
+    try:
+        pacer.wait()
+        response = client.get(f"/study/{study_id}")
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        script = soup.find("script", id="page-init-data")
+        if script is None or not script.string:
+            logger.warning("No page-init-data block found for study %s", study_id)
+            return []
+        try:
+            data = json.loads(script.string)
+            chapters = data["study"]["chapters"]
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            logger.warning("Unexpected page-init-data shape for study %s: %s", study_id, exc)
+            return []
+        return [StudyChapter(chapter_id=c["id"], name=c["name"]) for c in chapters]
     finally:
         if owns_client:
             client.close()
