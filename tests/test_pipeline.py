@@ -123,7 +123,7 @@ def test_recommend_lichess_study_records_a_recommendation():
             study_title="Sicilian Dragon",
             chapter_id="gIOq5Mk2",
             chapter_name="Introduction",
-            embed_url="https://lichess.org/study/embed/abc123/gIOq5Mk2?bg=auto",
+            embed_url="https://lichess.org/study/embed/abc123/gIOq5Mk2?bg=dark",
             blurb="Covers the main ideas.",
         )
     ]
@@ -233,7 +233,7 @@ def test_recommend_resources_returns_whatever_the_model_recommended_during_the_l
             study_title="Sicilian Dragon",
             chapter_id="gIOq5Mk2",
             chapter_name="Introduction",
-            embed_url="https://lichess.org/study/embed/abc123/gIOq5Mk2?bg=auto",
+            embed_url="https://lichess.org/study/embed/abc123/gIOq5Mk2?bg=dark",
             blurb="A strong, well-annotated Dragon repertoire.",
         )
     ]

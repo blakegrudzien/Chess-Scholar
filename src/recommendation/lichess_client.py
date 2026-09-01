@@ -150,7 +150,7 @@ def game_embed_url(game_id: str, *, theme: str = "auto", bg: str = "auto") -> st
     return f"{LICHESS_BASE_URL}/embed/{game_id}?theme={theme}&bg={bg}"
 
 
-def study_chapter_embed_url(study_id: str, chapter_id: str, *, bg: str = "auto") -> str:
+def study_chapter_embed_url(study_id: str, chapter_id: str, *, bg: str = "dark") -> str:
     """Build a read-only, embeddable URL for one chapter of a study.
 
     chapter_id is required, not optional: Lichess's study embed format is
@@ -158,5 +158,14 @@ def study_chapter_embed_url(study_id: str, chapter_id: str, *, bg: str = "auto")
     study, pick a default chapter" form, so this doesn't pretend one exists
     by defaulting chapter_id to something unverified. Whatever calls this
     is responsible for having already picked a chapter.
+
+    bg defaults to "dark", not Lichess's own "auto" -- confirmed live that
+    auto sets data-theme="system" on the embedded page, meaning it follows
+    whichever viewer's own OS light/dark preference, not this app's own
+    walnut/parchment identity. Most viewers are on light mode by default,
+    which renders Lichess's stark white theme directly against a dark
+    wood-toned app background. A fixed dark theme looks consistent for
+    every viewer regardless of their own system setting, matching the
+    deliberate single-theme choice made for the rest of the app's design.
     """
     return f"{LICHESS_BASE_URL}/study/embed/{study_id}/{chapter_id}?bg={bg}"

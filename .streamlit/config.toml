@@ -1,0 +1,29 @@
+# Visual identity: walnut, oxblood, and parchment -- a chess study, not a
+# SaaS dashboard. See scripts/init_db.sql-adjacent design notes (or the
+# published specimen) for the full rationale behind these values.
+#
+# secondaryBackgroundColor stays a light parchment tint deliberately, not the
+# dark walnut tone used elsewhere: Streamlit applies the single global
+# textColor (dark) to anything sitting on secondaryBackgroundColor, and there
+# is no separate "secondary text color" option to pair with it -- setting it
+# dark here would put dark text on a dark background. The one place a genuine
+# dark panel (code/PGN blocks) is wanted, codeBackgroundColor/codeTextColor
+# is the option Streamlit actually built for that pairing, used below instead.
+[theme]
+base = "light"
+primaryColor = "#6B1E2B"
+backgroundColor = "#E8DCC3"
+secondaryBackgroundColor = "#F1E8D4"
+textColor = "#2B1F17"
+borderColor = "#A88F72"
+
+font = "'Source Serif 4':https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap"
+headingFont = "Fraunces:https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&display=swap"
+codeFont = "'Space Mono':https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap"
+
+headingFontWeights = [600, 500, 500, 500, 500, 500]
+codeTextColor = "#EDE1CC"
+codeBackgroundColor = "#2B1F17"
+
+baseRadius = "2px"
+buttonRadius = "2px"

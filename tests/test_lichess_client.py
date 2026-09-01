@@ -132,3 +132,11 @@ def test_game_embed_url_format():
 def test_study_chapter_embed_url_format():
     url = study_chapter_embed_url("1sGpLrkI", "JinVss1N", bg="dark")
     assert url == "https://lichess.org/study/embed/1sGpLrkI/JinVss1N?bg=dark"
+
+
+def test_study_chapter_embed_url_defaults_to_dark_theme():
+    # Not Lichess's own "auto" default -- confirmed live that auto follows
+    # the viewer's OS light/dark preference, which clashes with this app's
+    # own fixed walnut/parchment theme for anyone on a light-mode system.
+    url = study_chapter_embed_url("1sGpLrkI", "JinVss1N")
+    assert url == "https://lichess.org/study/embed/1sGpLrkI/JinVss1N?bg=dark"
