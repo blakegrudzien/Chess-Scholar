@@ -37,10 +37,16 @@ Also supported, no new infra:
 - **RAG orchestration**: raw SQL + API calls, NOT LangChain/LlamaIndex — deliberately,
   so every step is explainable in an interview without hiding behind a framework.
 - **Frontend**: Streamlit.
-- **Board input v1**: click-based board using `chess.svg` rendering + Streamlit
-  session state (no JS). A drag-and-drop JS component (chessboard.js + chess.js via
-  Streamlit's Components API) is a stretch goal for later — do NOT use the existing
-  `streamlit-chess` / `streamlit-chess-board` PyPI packages, they're unmaintained
+- **Board input**: a draggable board (`src/ui/board_component/`), a custom
+  `st.components.v2.component` wrapping chessboard.js, replacing the original
+  click-grid v1. Deliberately not paired with chess.js — move legality stays
+  entirely in python-chess (`_attempt_move` in `src/ui/chat.py`), the same
+  source of truth the rest of the app already uses; chessboard.js is wired
+  purely as a visual/drag layer, optimistic-UI style (see that function's
+  docstring). Piece art is generated from `chess.svg.piece()` via
+  `scripts/generate_board_piece_images.py`, not chessboard.js's stock
+  Wikipedia set, for visual consistency with the rest of the app. Do NOT use
+  the `streamlit-chess` / `streamlit-chess-board` PyPI packages — unmaintained,
   and the latter explicitly doesn't work when deployed to Streamlit Cloud.
 - **Linting/formatting**: ruff (not black/flake8 separately).
 
@@ -81,4 +87,7 @@ this before touching Layer 2/3/4.
 - `streamlit run src/app.py` — run the app
 - `psql "$DATABASE_URL" -f scripts/init_db.sql` — init schema
 - `ruff check --fix . && ruff format .` — lint/format
-- `pytest -v tests` — run tests
+- `pytest -v tests` — run tests (the draggable-board test skips itself with a
+  clear reason if Playwright/Chromium aren't set up — see below)
+- `pip install -e ".[dev]" && playwright install chromium` — one-time setup for
+  the real-browser board test (`tests/test_board_component.py`)

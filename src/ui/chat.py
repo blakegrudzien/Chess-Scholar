@@ -20,6 +20,7 @@ from src.recommendation.pipeline import (
     LichessStudyRecommendation,
     recommend_resources,
 )
+from src.ui.board_component import chess_board
 from src.ui.resources import get_anthropic_client, get_db_pool, get_engine_pool, get_voyage
 
 # Anthropic's raw text deltas arrive in relatively large pieces (a clause or
@@ -131,11 +132,11 @@ def ask_with_status(question: str) -> str:
             # even though evaluate_chess_position's own validation later
             # rejects it for that turn -- leave the displayed board as it was.
         st.session_state.board = new_board
-        # A fresh chess.Board(fen) has no move history, so a selected square
-        # or illegal-move warning from before this update no longer
-        # corresponds to anything real on the new board.
-        st.session_state.selected_square = None
+        # A fresh chess.Board(fen) has no move history, so an illegal-move
+        # warning from before this update no longer corresponds to anything
+        # real on the new board.
         st.session_state.last_illegal_attempt = None
+        st.session_state.board_generation += 1
 
     answer = ask_agent(question, on_step=on_step, on_chunk=on_chunk, on_position=on_position)
 
@@ -262,12 +263,12 @@ def render_chat_tab() -> None:
         st.session_state.resource_recommendations = None
     if "board" not in st.session_state:
         st.session_state.board = chess.Board()
-    if "selected_square" not in st.session_state:
-        st.session_state.selected_square = None
     if "last_illegal_attempt" not in st.session_state:
         st.session_state.last_illegal_attempt = None
     if "pending_board_question" not in st.session_state:
         st.session_state.pending_board_question = None
+    if "board_generation" not in st.session_state:
+        st.session_state.board_generation = 0
 
     chat_col, board_col = st.columns([3, 2])
 
@@ -292,72 +293,62 @@ def render_chat_tab() -> None:
         _render_board_panel()
 
 
-def handle_square_click(square: chess.Square) -> None:
+def _attempt_move(source: str, target: str) -> None:
+    """Validate a drag-and-drop {from, to} pair against python-chess -- the
+    single source of truth for legality, mirroring how handle_square_click
+    used to work but for a one-shot from/to pair instead of two separate
+    clicks. Falls back to auto-queen promotion, same as before.
+
+    Always bumps board_generation, including on rejection: an illegal drop
+    leaves board.fen() textually identical to what it was before the drop,
+    so without a distinct generation value the component has no signal that
+    it needs to re-render and snap the piece back -- see chess_board()'s own
+    docstring for why this is required, not just belt-and-suspenders.
+    """
     board: chess.Board = st.session_state.board
-    selected = st.session_state.selected_square
-
-    if selected is None:
-        piece = board.piece_at(square)
-        if piece is not None and piece.color == board.turn:
-            st.session_state.selected_square = square
-        return
-
-    if selected == square:
-        st.session_state.selected_square = None
-        return
-
-    move = chess.Move(selected, square)
+    move = chess.Move.from_uci(source + target)
     if move not in board.legal_moves:
-        move = chess.Move(selected, square, promotion=chess.QUEEN)
+        move = chess.Move.from_uci(source + target + "q")
     if move in board.legal_moves:
         board.push(move)
         st.session_state.last_illegal_attempt = None
     else:
-        st.session_state.last_illegal_attempt = (selected, square)
-    st.session_state.selected_square = None
+        st.session_state.last_illegal_attempt = (source, target)
+    st.session_state.board_generation += 1
 
 
 def _render_board_panel() -> None:
-    """The board column: a compact display of the position under
-    discussion, plus a quick-eval button and an expander for setting up a
-    custom position to ask about.
+    """The board column: a draggable board reflecting the position under
+    discussion, plus a quick-eval button, Reset/Undo, and a free-text
+    "ask about this position" form.
 
-    Neither button here calls ask_with_status directly -- both stash a
+    Optimistic UI, no client-side legality check (see board_component's own
+    docstring): chess_board() lets a drop land wherever it was dropped, and
+    _attempt_move validates it here against python-chess. An illegal drop
+    leaves st.session_state.board unchanged, so the next render's `data`
+    (the still-unmoved FEN) reverts the piece visually via chessboard.js's
+    own diffing -- no explicit snapback handling needed on either side.
+
+    chess_board() only ever returns a given drop once -- it's a Streamlit
+    "trigger" value, documented as transient (resets to None after one
+    script run), unlike the older declare_component API's return values,
+    which persist until explicitly replaced. No dedup bookkeeping needed.
+
+    Neither button below calls ask_with_status directly -- both stash a
     (question, fen) pair in st.session_state.pending_board_question and
     st.rerun() instead, so the actual submission (and its live status/
     streaming UI) happens from inside chat_col on the next script pass, not
     in this narrow column. See _submit_question's docstring for why.
     """
     board: chess.Board = st.session_state.board
-    selected = st.session_state.selected_square
 
-    # Jakob's Law: chess players' existing mental model (lichess, chess.com)
-    # is select a piece, see where it can legally go, see what the last move
-    # was. None of that was previously shown -- only the selected square
-    # itself was highlighted. `squares` is python-chess's own mechanism for
-    # legal-move-style highlighting, distinct from the flat single-color
-    # `fill` used for the current selection, so the two read as different
-    # things rather than one undifferentiated blob of color.
-    fill = {}
-    legal_destinations = None
-    if selected is not None:
-        fill[selected] = "#A87F3F"  # brass -- matches the app's own accent
-        legal_destinations = chess.SquareSet(
-            move.to_square for move in board.legal_moves if move.from_square == selected
-        )
-    last_move = board.move_stack[-1] if board.move_stack else None
+    # size=300, down from the old standalone tab's 400 -- this board shares
+    # horizontal space with chat instead of having the full page to itself.
+    drop = chess_board(board.fen(), size=300, generation=st.session_state.board_generation)
+    if drop is not None:
+        _attempt_move(drop["from"], drop["to"])
+        st.rerun()
 
-    # size=300, down from the old standalone tab's 400 -- this board now
-    # shares horizontal space with chat instead of having the full page
-    # width to itself.
-    svg = chess.svg.board(
-        board=board,
-        size=300,
-        fill=fill,
-        squares=legal_destinations,
-        lastmove=last_move,
-    )
-    st.components.v1.html(svg, height=325)
     st.caption(f"Turn: {'White' if board.turn else 'Black'}")
     st.code(board.fen(), language=None)
     if st.session_state.last_illegal_attempt is not None:
@@ -371,38 +362,30 @@ def _render_board_panel() -> None:
         )
         st.rerun()
 
-    with st.expander("Set up a position to ask about"):
-        st.write("Click a square to select a piece, then click a destination square to move it.")
-        for rank in range(8, 0, -1):
-            cols = st.columns(8)
-            for i, file_letter in enumerate("abcdefgh"):
-                square = chess.parse_square(f"{file_letter}{rank}")
-                piece = board.piece_at(square)
-                label = piece.unicode_symbol() if piece else "·"
-                with cols[i]:
-                    if st.button(label, key=f"sq_{file_letter}{rank}"):
-                        handle_square_click(square)
-                        st.rerun()
-
-        reset_col, undo_col = st.columns(2)
-        with reset_col:
-            if st.button("Reset board"):
-                st.session_state.board = chess.Board()
-                st.session_state.selected_square = None
-                st.session_state.last_illegal_attempt = None
-                st.rerun()
-        with undo_col:
-            if st.button("Undo last move", disabled=not board.move_stack):
-                board.pop()
-                st.session_state.selected_square = None
-                st.rerun()
-
-        with st.form("position_question_form", clear_on_submit=True):
-            position_question = st.text_input("Ask about this position...")
-            asked = st.form_submit_button("Ask")
-        if asked and position_question:
-            st.session_state.pending_board_question = (position_question, board.fen())
+    # No more expander: it existed only to visually corral the old 8x8
+    # click-grid the user found "ugly and disjointed" -- with dragging
+    # directly on the board replacing that grid, these controls are core,
+    # expected board interactions (matching lichess/chess.com, which show
+    # them directly beside the board), not something to hide behind a click.
+    reset_col, undo_col = st.columns(2)
+    with reset_col:
+        if st.button("Reset board"):
+            st.session_state.board = chess.Board()
+            st.session_state.last_illegal_attempt = None
+            st.session_state.board_generation += 1
             st.rerun()
+    with undo_col:
+        if st.button("Undo last move", disabled=not board.move_stack):
+            board.pop()
+            st.session_state.board_generation += 1
+            st.rerun()
+
+    with st.form("position_question_form", clear_on_submit=True):
+        position_question = st.text_input("Ask about this position...")
+        asked = st.form_submit_button("Ask")
+    if asked and position_question:
+        st.session_state.pending_board_question = (position_question, board.fen())
+        st.rerun()
 
     st.divider()
     _render_resource_recommendations()

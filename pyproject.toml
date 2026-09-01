@@ -40,6 +40,13 @@ dev = [
     "ruff>=0.6",
     "pytest>=8.3",
     "pytest-cov>=5.0",
+    "playwright>=1.40",  # real-browser coverage for the draggable board
+                         # (tests/test_board_component.py) -- dev/test-only,
+                         # deliberately not in [project.dependencies] or
+                         # requirements.txt, which is what Streamlit
+                         # Community Cloud reads to deploy the app itself.
+                         # Also requires a one-time `playwright install
+                         # chromium` -- not expressible as a pip dependency.
 ]
 
 [tool.ruff]
