@@ -260,6 +260,20 @@ div[data-testid="stApp"] {
             rgba(168, 143, 114, 0.06) 0px, rgba(168, 143, 114, 0.06) 1px,
             transparent 1px, transparent 41px);
 }
+
+/* layout="wide" is needed for the board tab's 8-column grid, but it also
+   stretches chat prose edge to edge on a wide window -- well past a
+   comfortable reading measure. Capping just the panel that contains the
+   chat input (rather than assuming DOM order among the three tab panels,
+   which didn't actually match :first-of-type in practice) keeps the board
+   and upload tabs at full width while giving chat text a fixed column.
+   No margin: auto -- the panel already starts at the same left edge as
+   the page title and tab bar above it (same parent padding), so capping
+   width alone keeps that edge aligned instead of centering the panel
+   into a column visually disconnected from the header above it. */
+div[data-testid="stTabPanel"]:has([data-testid="stChatInputTextArea"]) {
+    max-width: 720px;
+}
 </style>
 """)
 
