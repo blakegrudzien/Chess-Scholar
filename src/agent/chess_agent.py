@@ -22,7 +22,16 @@ from src.rag.vector_search import search_chunks
 from src.search.structured_search import common_moves_at_ply, eco_summary, piece_placement_frequency
 
 MODEL = "claude-sonnet-5"
-MAX_TOKENS = 4096
+# Doubled from the original 4096 after a real, reproduced failure: a turn
+# combining several tool calls (e.g. three show_opening_line diagrams plus
+# their rationale) plus growing conversation history can consume enough
+# output tokens that generation gets cut off mid-tool-call, producing a
+# tool_use block with an incomplete `input` dict -- the direct cause of a
+# KeyError crash in _report_position_update (see its own defensive fix)
+# and almost certainly a contributor to turns ending without ever reaching
+# a clean text synthesis (see _recover_synthesis). More headroom doesn't
+# eliminate the possibility, just makes it meaningfully less likely.
+MAX_TOKENS = 8192
 
 SYSTEM_PROMPT = """You are a chess research assistant/mentor with access to a corpus \
 of grandmaster games, book/annotation text, and a chess engine, via tools.
@@ -43,9 +52,24 @@ own knowledge alone -- you are not a substitute for engine analysis.
 own game (Layer 4). This is an approximate, illustrative comparison based on \
 exact opening moves, not a rigorous positional match -- always tell the user \
 this is illustrative, not authoritative, when you use it.
+- show_opening_line: renders a labeled board diagram for a specific move \
+sequence. For opening-theory questions (ECO stats, common-move, or \
+strategic-plan answers), proactively call this for the main line and any \
+named sidelines you discuss, instead of only describing moves in prose -- \
+readers should be able to see the position, not just read algebraic \
+notation. Scoped to opening theory, not a substitute for \
+evaluate_chess_position when judging whether a move or plan is good.
 
 Combine tools when a question calls for it (e.g. stats + commentary for an \
 opening-profile question). Be direct about which tool(s) you used.
+
+For broad "walk me through" or "what are the options against X" questions, \
+prefer one well-chosen tool call per layer over several near-duplicate \
+calls (e.g. one get_eco_summary for the most relevant ECO code, not one \
+per code in the family) -- every tool call is a real network round trip, \
+and a focused, useful answer that arrives promptly beats an exhaustive one \
+that takes minutes. Two or three show_opening_line diagrams (a main line \
+plus the most relevant sidelines) is plenty; skip minor branches.
 
 Before calling a tool, state in one short sentence which layer you're using \
 and why -- e.g. "Checking Layer 2 for strategic ideas about isolated pawns." \
@@ -68,6 +92,7 @@ TOOL_LABELS: dict[str, str] = {
     "search_annotations": "Layer 2 (semantic search): searching commentary and book text.",
     "evaluate_chess_position": "Layer 3 (Stockfish): evaluating the position.",
     "find_similar_corpus_games": "Layer 4 (similarity search): comparing against the corpus.",
+    "show_opening_line": "Rendering a position diagram.",
 }
 
 
@@ -83,6 +108,7 @@ def build_tools(
     db_pool: psycopg2.pool.ThreadedConnectionPool,
     engine_pool: EnginePool,
     voyage_client: voyageai.Client,
+    on_position: Callable[..., None] | None = None,
 ) -> list[Callable]:
     """Build the tool functions for one session, bound to the given DB pool,
     Stockfish engine pool, and Voyage client.
@@ -96,6 +122,20 @@ def build_tools(
     and turns it into a tool_result error sent back to the model, so a
     raised psycopg2 error never reaches the caller of `ask()` to trigger a
     retry there.
+
+    on_position, if given, is also called directly from
+    find_similar_corpus_games with its top match's FEN (when it has one) --
+    unlike evaluate_chess_position's FEN, which is a tool *argument* the
+    model supplies and ask() can read straight off the tool_use block, this
+    one only exists in the tool's *output* (a DB query result the model
+    never sees as a discrete value), so it needs this direct, in-line
+    callback instead of a shared message-scanning mechanism.
+
+    Full signature callers can expect: on_position(fen, *, label=None,
+    update_board=True). show_opening_line is the one caller that passes
+    label and update_board=False -- an illustrative example line isn't the
+    position a caller's UI should treat as "currently under discussion" the
+    way an actual evaluation or matched game is.
     """
 
     def _query(fn: Callable, *args, **kwargs):
@@ -246,11 +286,38 @@ def build_tools(
             return f"Invalid input: {exc}"
         if not results:
             return "No similar games found."
+        if on_position is not None and results[0].fen_after is not None:
+            on_position(results[0].fen_after)
         return "\n".join(
             f"{r.matching_plies} matching plies: {r.white} vs {r.black} "
             f"({r.year}, {r.eco_code}, {r.result})"
             for r in results
         )
+
+    @beta_tool
+    def show_opening_line(moves: list[str], label: str) -> str:
+        """Render a labeled board diagram for a specific, named sequence of
+        opening moves -- e.g. the main line of a variation, or a named
+        sideline you're discussing by name. Moves are replayed and validated
+        for legality; an illegal move fails the call rather than showing
+        something wrong. Scoped to opening theory (a short, known sequence
+        from the starting position), not a substitute for
+        evaluate_chess_position when judging whether a move or plan is good.
+
+        Args:
+            moves: Moves in SAN notation from the starting position, e.g. ["Nf3", "d5", "g3"].
+            label: A short name for this line, shown next to the diagram,
+                e.g. "Main line" or "Yugoslav queenside expansion".
+        """
+        board = chess.Board()
+        for i, san in enumerate(moves, start=1):
+            try:
+                board.push_san(san)
+            except ValueError:
+                return f"'{san}' (move {i}) isn't legal in that sequence -- diagram not shown."
+        if on_position is not None:
+            on_position(board.fen(), label=label, update_board=False)
+        return f"Shown: {label} ({' '.join(moves)})"
 
     return [
         get_eco_summary,
@@ -259,6 +326,7 @@ def build_tools(
         search_annotations,
         evaluate_chess_position,
         find_similar_corpus_games,
+        show_opening_line,
     ]
 
 
@@ -277,16 +345,77 @@ def _report_tool_steps(message, on_step: Callable[[str], None]) -> None:
     on_step(rationale)
 
 
-def _report_position_update(message, on_position: Callable[[str], None]) -> None:
+def _report_position_update(message, on_position: Callable[..., None]) -> None:
     """Surface the FEN behind a turn's evaluate_chess_position call, if any --
-    the only tool of the six that takes a real board position rather than an
-    ECO code, free-text query, or move list, making it the one reliable
-    signal for "the position currently under discussion."
+    the only tool whose FEN is a direct *argument* the model supplies (as
+    opposed to find_similar_corpus_games' DB-derived top match, or
+    show_opening_line's replayed-from-SAN result, both reported via their
+    own in-line on_position calls instead of this message-scanning path).
+
+    Reads the raw tool_use block directly, independent of whether the SDK
+    later successfully dispatches the actual tool call -- a turn cut off
+    mid-generation (see MAX_TOKENS's comment) can yield a tool_use block
+    whose `input` is missing "fen" entirely. block.input.get(...) rather
+    than block.input[...] is deliberate: a real, reproduced KeyError here
+    crashed the whole app, for a case where simply not reporting a position
+    update (leaving the displayed board as it was) is a fine fallback.
     """
     for block in message.content:
         if block.type == "tool_use" and block.name == "evaluate_chess_position":
-            on_position(block.input["fen"])
+            fen = block.input.get("fen")
+            if fen is not None:
+                on_position(fen)
             return
+
+
+def _recover_synthesis(
+    client: anthropic.Anthropic, runner, on_chunk: Callable[[str], None] | None
+) -> str:
+    """Force a real answer when the tool-calling loop above ends without
+    one, by continuing the exact conversation the runner already built and
+    explicitly asking for the synthesis that turn should have produced.
+
+    runner._params["messages"] is an internal, unversioned attribute, not a
+    guess -- confirmed no public equivalent exists in this SDK version by
+    listing the runner's own public API directly (only append_messages,
+    set_messages_params, generate_tool_call_response, and until_done are
+    exposed; none return the accumulated message list). Anthropic's own
+    compaction_control implementation, a few lines away in this same SDK
+    file, reads this identical private attribute for the same reason --
+    that's the basis for treating it as a reasonable extension point here,
+    not a fragile guess, though it may need revisiting on an SDK upgrade.
+    """
+    messages = list(runner._params["messages"])
+    # A trailing assistant message with an unresolved tool_use block can't
+    # be followed directly by a new user turn -- the API requires a
+    # matching tool_result immediately after any tool_use. Same fix
+    # compaction_control's own code applies, for the identical reason.
+    if messages and messages[-1]["role"] == "assistant":
+        non_tool_blocks = [
+            block
+            for block in messages[-1]["content"]
+            if not (isinstance(block, dict) and block.get("type") == "tool_use")
+        ]
+        if non_tool_blocks:
+            messages[-1] = {**messages[-1], "content": non_tool_blocks}
+        else:
+            messages = messages[:-1]
+
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                "Please give your complete answer now, based on everything you've found so far."
+            ),
+        }
+    )
+    response = client.beta.messages.create(
+        model=MODEL, max_tokens=MAX_TOKENS, system=SYSTEM_PROMPT, messages=messages
+    )
+    text = "".join(block.text for block in response.content if block.type == "text")
+    if on_chunk is not None and text:
+        on_chunk(text)
+    return text
 
 
 def ask(
@@ -297,7 +426,8 @@ def ask(
     client: anthropic.Anthropic | None = None,
     on_step: Callable[[str], None] | None = None,
     on_chunk: Callable[[str], None] | None = None,
-    on_position: Callable[[str], None] | None = None,
+    on_position: Callable[..., None] | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> str:
     """Answer one question, routing across the four layers via tool-calling.
     Returns the final response text.
@@ -320,29 +450,51 @@ def ask(
     If `on_position` is given, it's called with the FEN whenever a turn
     calls evaluate_chess_position -- meant for a caller to keep a displayed
     board in sync with whatever position the conversation just touched.
+
+    `history`, if given, is prior turns as plain {"role", "content"} dicts
+    (each assistant entry just its final text, no tool_use/tool_result
+    blocks replayed) prepended before `question`. Without it, every call is
+    a fresh, context-free question -- the model has no memory of anything
+    asked earlier in the same session.
     """
     client = client or anthropic.Anthropic()
-    tools = build_tools(db_pool, engine_pool, voyage_client)
+    tools = build_tools(db_pool, engine_pool, voyage_client, on_position=on_position)
 
+    messages = [*(history or []), {"role": "user", "content": question}]
     runner = client.beta.messages.tool_runner(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         system=SYSTEM_PROMPT,
         tools=tools,
-        messages=[{"role": "user", "content": question}],
+        messages=messages,
         stream=True,
     )
 
     final_text = ""
+    last_message = None
     for turn in runner:
         for delta in turn.text_stream:
             if on_chunk is not None:
                 on_chunk(delta)
         message = turn.get_final_message()
+        last_message = message
         if on_step is not None:
             _report_tool_steps(message, on_step)
         if on_position is not None:
             _report_position_update(message, on_position)
         final_text = "".join(block.text for block in message.content if block.type == "text")
+
+    if not final_text.strip() and last_message is not None:
+        # Observed in practice, not just theoretically possible: the loop
+        # above can end without ever producing a clean text-only synthesis
+        # turn, even though tool_runner's own termination logic (read
+        # directly from its source) is only supposed to exit normally once
+        # generate_tool_call_response() finds no more tool calls to make --
+        # every other stop condition (a refusal, hitting max_iterations,
+        # which this app doesn't set) was checked and ruled out. Rather
+        # than silently return nothing, force one.
+        if on_step is not None:
+            on_step("Recovering an incomplete response...")
+        final_text = _recover_synthesis(client, runner, on_chunk)
 
     return final_text

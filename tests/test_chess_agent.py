@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import chess
 import psycopg2
 import pytest
 
@@ -11,7 +12,7 @@ from src.rag.vector_search import ChunkResult
 from src.search.structured_search import EcoSummary, MoveFrequency, SquareFrequency
 
 
-def _build_tools():
+def _build_tools(on_position=None):
     db_pool = MagicMock()
     conn = MagicMock()
     db_pool.getconn.return_value = conn
@@ -19,7 +20,9 @@ def _build_tools():
     engine = MagicMock()
     engine_pool.checkout.return_value.__enter__.return_value = engine
     voyage_client = MagicMock()
-    tools = {t.name: t for t in build_tools(db_pool, engine_pool, voyage_client)}
+    tools = {
+        t.name: t for t in build_tools(db_pool, engine_pool, voyage_client, on_position=on_position)
+    }
     return tools, db_pool, conn, engine_pool, engine, voyage_client
 
 
@@ -238,6 +241,7 @@ def test_find_similar_corpus_games_formats_matches():
             eco_code="C67",
             result="1/2-1/2",
             matching_plies=10,
+            fen_after="r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 4 4",
         )
     ]
     with patch("src.agent.chess_agent._find_similar_games", return_value=matches) as mock_fn:
@@ -248,12 +252,114 @@ def test_find_similar_corpus_games_formats_matches():
     assert "Adams, Michael vs Kramnik, Vladimir" in result
 
 
+def test_find_similar_corpus_games_reports_the_top_match_fen_via_on_position():
+    positions = []
+    tools, _, _, _, _, _ = _build_tools(on_position=positions.append)
+    matches = [
+        SimilarGame(
+            game_id="g1",
+            white="Adams, Michael",
+            black="Kramnik, Vladimir",
+            year=2014,
+            eco_code="C67",
+            result="1/2-1/2",
+            matching_plies=10,
+            fen_after="r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 4 4",
+        ),
+        SimilarGame(
+            game_id="g2",
+            white="Carlsen, Magnus",
+            black="Caruana, Fabiano",
+            year=2018,
+            eco_code="C67",
+            result="1-0",
+            matching_plies=8,
+            fen_after="some-other-fen",
+        ),
+    ]
+    with patch("src.agent.chess_agent._find_similar_games", return_value=matches):
+        tools["find_similar_corpus_games"](["e4", "e5", "Nf3"])
+
+    # Only the top-ranked match's fen is reported, not every result's.
+    assert positions == ["r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 4 4"]
+
+
+def test_find_similar_corpus_games_does_not_call_on_position_with_no_results():
+    positions = []
+    tools, _, _, _, _, _ = _build_tools(on_position=positions.append)
+    with patch("src.agent.chess_agent._find_similar_games", return_value=[]):
+        tools["find_similar_corpus_games"](["e4", "e5", "Nf3"])
+
+    assert positions == []
+
+
+def test_find_similar_corpus_games_does_not_call_on_position_when_top_match_has_no_fen():
+    positions = []
+    tools, _, _, _, _, _ = _build_tools(on_position=positions.append)
+    matches = [
+        SimilarGame(
+            game_id="g1",
+            white="Adams, Michael",
+            black="Kramnik, Vladimir",
+            year=2014,
+            eco_code="C67",
+            result="1/2-1/2",
+            matching_plies=0,
+            fen_after=None,
+        )
+    ]
+    with patch("src.agent.chess_agent._find_similar_games", return_value=matches):
+        tools["find_similar_corpus_games"](["e4", "e5", "Nf3"])
+
+    assert positions == []
+
+
 def test_find_similar_corpus_games_surfaces_invalid_input():
     tools, _, _, _, _, _ = _build_tools()
     with patch("src.agent.chess_agent._find_similar_games", side_effect=ValueError("empty")):
         result = tools["find_similar_corpus_games"]([])
 
     assert "Invalid input" in result
+
+
+def test_show_opening_line_reports_the_fen_and_label_via_on_position():
+    on_position = MagicMock()
+    tools, _, _, _, _, _ = _build_tools(on_position=on_position)
+
+    result = tools["show_opening_line"](["e4", "e5", "Nf3"], "Main line")
+
+    board = chess.Board()
+    for san in ["e4", "e5", "Nf3"]:
+        board.push_san(san)
+    on_position.assert_called_once_with(board.fen(), label="Main line", update_board=False)
+    assert "Main line" in result
+    assert "e4 e5 Nf3" in result
+
+
+def test_show_opening_line_rejects_an_illegal_move_without_calling_on_position():
+    on_position = MagicMock()
+    tools, _, _, _, _, _ = _build_tools(on_position=on_position)
+
+    result = tools["show_opening_line"](["e4", "e5", "Qh5", "Ke7", "Qxe7"], "bogus")
+
+    # e5's king can't legally reach e7 in one move -- the sequence should
+    # fail at that step, not silently continue or show a wrong position.
+    on_position.assert_not_called()
+    assert "not legal" in result or "isn't legal" in result
+
+
+def test_show_opening_line_called_twice_reports_two_distinct_positions():
+    on_position = MagicMock()
+    tools, _, _, _, _, _ = _build_tools(on_position=on_position)
+
+    tools["show_opening_line"](["e4", "e5", "Nf3"], "Main line")
+    tools["show_opening_line"](["e4", "e5", "Nf3", "Nc6", "Bb5"], "Ruy Lopez")
+
+    assert on_position.call_count == 2
+    first_call, second_call = on_position.call_args_list
+    assert first_call.kwargs["label"] == "Main line"
+    assert second_call.kwargs["label"] == "Ruy Lopez"
+    assert first_call.args[0] != second_call.args[0]
 
 
 def _tool_use_block(name: str, input: dict | None = None) -> MagicMock:
@@ -298,8 +404,44 @@ def test_ask_returns_text_from_final_message_only():
     call_kwargs = client.beta.messages.tool_runner.call_args.kwargs
     assert call_kwargs["model"] == "claude-sonnet-5"
     assert call_kwargs["stream"] is True
-    assert len(call_kwargs["tools"]) == 6
+    assert len(call_kwargs["tools"]) == 7
     assert call_kwargs["messages"] == [{"role": "user", "content": "some question"}]
+
+
+def test_ask_prepends_history_before_the_new_question():
+    final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [final_turn]
+    prior_turns = [
+        {"role": "user", "content": "What's the Ruy Lopez?"},
+        {"role": "assistant", "content": "1.e4 e5 2.Nf3 Nc6 3.Bb5, a classical opening."},
+    ]
+
+    ask(
+        "What about the Berlin Defense?",
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        client=client,
+        history=prior_turns,
+    )
+
+    call_kwargs = client.beta.messages.tool_runner.call_args.kwargs
+    assert call_kwargs["messages"] == [
+        *prior_turns,
+        {"role": "user", "content": "What about the Berlin Defense?"},
+    ]
+
+
+def test_ask_without_history_sends_only_the_new_question():
+    final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [final_turn]
+
+    ask("a fresh question", MagicMock(), MagicMock(), MagicMock(), client=client)
+
+    call_kwargs = client.beta.messages.tool_runner.call_args.kwargs
+    assert call_kwargs["messages"] == [{"role": "user", "content": "a fresh question"}]
 
 
 def test_ask_returns_empty_string_when_no_messages_yielded():
@@ -309,6 +451,61 @@ def test_ask_returns_empty_string_when_no_messages_yielded():
     result = ask("some question", MagicMock(), MagicMock(), MagicMock(), client=client)
 
     assert result == ""
+
+
+def test_ask_recovers_when_the_loop_ends_on_a_tool_call_with_no_synthesis():
+    """Reproduces the real, observed failure: the tool-calling loop ends on
+    a turn whose only content is a tool_use block (no text at all), instead
+    of a clean text-only synthesis turn. ask() should force a real answer
+    rather than silently returning empty.
+    """
+    dangling_turn = _stream_turn([_tool_use_block("search_annotations", {"query": "x"})])
+
+    client = MagicMock()
+    # A real BaseSyncToolRunner exposes _params["messages"] (see
+    # _recover_synthesis's docstring for why this is read at all) -- a bare
+    # MagicMock() return_value already has an auto-speccing ._params
+    # attribute, so set it explicitly to a realistic accumulated
+    # conversation ending on the same dangling tool_use block.
+    runner = MagicMock()
+    runner.__iter__.return_value = iter([dangling_turn])
+    runner._params = {
+        "messages": [
+            {"role": "user", "content": "some question"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "search_annotations", "input": {}}
+                ],
+            },
+        ]
+    }
+    client.beta.messages.tool_runner.return_value = runner
+    recovery_response = MagicMock()
+    recovery_response.content = [MagicMock(type="text", text="Here is the real answer.")]
+    client.beta.messages.create.return_value = recovery_response
+
+    steps = []
+    result = ask(
+        "some question", MagicMock(), MagicMock(), MagicMock(), client=client, on_step=steps.append
+    )
+
+    assert result == "Here is the real answer."
+    # The dangling tool_use-only assistant message must not be sent as-is
+    # (the API requires a tool_result immediately after any tool_use) --
+    # confirm it was dropped rather than forwarded verbatim.
+    recovery_messages = client.beta.messages.create.call_args.kwargs["messages"]
+    assert all(
+        not (
+            isinstance(m.get("content"), list)
+            and any(b.get("type") == "tool_use" for b in m["content"])
+        )
+        for m in recovery_messages
+        if isinstance(m.get("content"), list)
+    )
+    assert recovery_messages[-1]["role"] == "user"
+    assert "complete answer now" in recovery_messages[-1]["content"]
+    assert any("Recovering" in s for s in steps)
 
 
 def test_ask_reports_model_rationale_via_on_step():
@@ -398,6 +595,28 @@ def test_ask_reports_position_via_on_position():
     ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_position=positions.append)
 
     assert positions == ["8/8/8/8/8/8/8/K6k w - - 0 1"]
+
+
+def test_ask_does_not_crash_on_an_evaluate_chess_position_call_missing_fen():
+    """Regression test for a real, reproduced KeyError crash: a turn cut
+    off mid-generation (see MAX_TOKENS's comment) can produce an
+    evaluate_chess_position tool_use block whose input dict never got as
+    far as including "fen" at all. This must not crash the app -- just
+    skip reporting a position update for that turn.
+    """
+    tool_turn = _stream_turn([_tool_use_block("evaluate_chess_position", {})])
+    final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
+
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_turn]
+
+    positions = []
+    result = ask(
+        "q", MagicMock(), MagicMock(), MagicMock(), client=client, on_position=positions.append
+    )
+
+    assert result == "Final answer."
+    assert positions == []
 
 
 def test_ask_does_not_call_on_position_for_other_tools():

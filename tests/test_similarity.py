@@ -1,3 +1,4 @@
+import chess
 import psycopg2
 import pytest
 
@@ -114,3 +115,22 @@ def test_max_ply_caps_how_far_the_comparison_looks(conn):
 def test_rejects_empty_moves(conn):
     with pytest.raises(ValueError):
         find_similar_games(conn, [], max_ply=20, limit=10)
+
+
+def test_fen_after_reflects_the_position_at_the_matched_cutoff(conn):
+    results = find_similar_games(conn, USER_MOVES, max_ply=20, limit=10)
+    by_white = {r.white: r for r in results}
+
+    # Alice matches all 6 plies (1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5) -- the FEN
+    # at that cutoff is the position after Black's 3...Bc5.
+    board = chess.Board()
+    for san in ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"]:
+        board.push_san(san)
+    assert by_white["Alice"].fen_after == board.fen()
+
+    # Eve's game diverges on White's very first move (d4 vs e4), so
+    # match_length is 0 -- there's no ply-0 row in `moves` to join against,
+    # and fen_after should come back None rather than the query silently
+    # excluding the game or erroring.
+    assert by_white["Eve"].matching_plies == 0
+    assert by_white["Eve"].fen_after is None

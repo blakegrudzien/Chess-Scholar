@@ -32,6 +32,16 @@ from src.ui.resources import get_anthropic_client, get_db_pool, get_engine_pool,
 _WORD_SPLIT_RE = re.compile(r"\s*\S+\s*")
 STREAM_WORD_DELAY_SECONDS = 0.02
 
+# Caps the paced reveal to the first N words of any single turn's text --
+# without this, a long final answer (a real one ran 900+ words this
+# session) pays STREAM_WORD_DELAY_SECONDS on every single word with no
+# ceiling, adding 15-20+ seconds of pure artificial delay on top of the
+# real generation/tool-call latency of an already-long multi-turn answer.
+# The first N words still get the smooth typewriter feel; the rest of a
+# long answer (or a tool-calling turn's rationale, which gets discarded by
+# on_step a moment later regardless) appears immediately.
+MAX_PACED_WORDS_PER_TURN = 40
+
 # Streamlit's default chat avatars are a generic face/robot Material icon --
 # a visual cue that reads as "generic AI chatbot," working against the
 # deliberately non-modern, non-AI-flavored identity built for this app.
@@ -60,7 +70,8 @@ def ask_agent(
     question: str,
     on_step: Callable[[str], None] | None = None,
     on_chunk: Callable[[str], None] | None = None,
-    on_position: Callable[[str], None] | None = None,
+    on_position: Callable[..., None] | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> str:
     return ask(
         question,
@@ -71,15 +82,32 @@ def ask_agent(
         on_step=on_step,
         on_chunk=on_chunk,
         on_position=on_position,
+        history=history,
     )
 
 
-def ask_with_status(question: str) -> str:
+def ask_with_status(
+    question: str, *, history: list[dict[str, str]] | None = None
+) -> tuple[str, list[tuple[str, str | None]]]:
     """Run ask_agent, showing each tool-calling step live in an st.status
     panel and streaming the final answer into view as it is generated,
     rather than a blank spinner followed by the whole answer appearing at
     once. Renders the final answer itself, so callers should not render
     `answer` again afterward.
+
+    history, if given, is prior turns the model should have context on --
+    see _build_message_history and ask()'s own docstring. Without it, this
+    call has no memory of anything asked earlier in the session.
+
+    Returns (answer, touched_fens) -- touched_fens is every distinct
+    (fen, label) pair on_position reported during this call (immediate
+    repeat fens deduped), in the order they came up, for a caller to render
+    as inline diagrams alongside the answer. label is None except for
+    show_opening_line's calls. Sourced from any tool call that touches a
+    real, verified position -- evaluate_chess_position, find_similar_corpus_
+    games's top match, and show_opening_line's replayed sequence (see
+    chess_agent.build_tools's on_position docstring for why each needs its
+    own plumbing).
 
     A tool-calling turn and the final answer both start with plain text
     (the system prompt asks for a one-sentence rationale before every tool
@@ -94,10 +122,13 @@ def ask_with_status(question: str) -> str:
     time with a short pause between them (see STREAM_WORD_DELAY_SECONDS),
     rather than written all at once -- the raw deltas from the API arrive
     in clause-or-sentence-sized pieces, so writing them straight through
-    looks like it is appearing in chunks rather than being typed. This adds
-    a small amount of wall-clock time to how long the last word takes to
-    appear, in exchange for text appearing continuously throughout instead
-    of in a few jumps.
+    looks like it is appearing in chunks rather than being typed. Only the
+    first MAX_PACED_WORDS_PER_TURN words of any one turn get this treatment;
+    past that, text still appears immediately (no delay), just not word by
+    word -- a long final answer (or a multi-tool-call question's several
+    rationale turns, each discarded a moment later anyway) shouldn't pay
+    linear-in-length artificial delay on top of already-real generation and
+    tool-call latency.
 
     The stop button doesn't need explicit click handling: Streamlit treats
     interactions as implicit yield points during a running script, so any
@@ -109,40 +140,65 @@ def ask_with_status(question: str) -> str:
     answer_area = st.empty()
 
     accumulated_text = ""
+    words_this_turn = 0
+    touched_fens: list[tuple[str, str | None]] = []
 
     def on_chunk(delta: str) -> None:
-        nonlocal accumulated_text
+        nonlocal accumulated_text, words_this_turn
         pieces = _WORD_SPLIT_RE.findall(delta) or [delta]
         for piece in pieces:
             accumulated_text += piece
             answer_area.markdown(accumulated_text)
-            time.sleep(STREAM_WORD_DELAY_SECONDS)
+            words_this_turn += 1
+            if words_this_turn <= MAX_PACED_WORDS_PER_TURN:
+                time.sleep(STREAM_WORD_DELAY_SECONDS)
 
     def on_step(text: str) -> None:
-        nonlocal accumulated_text
+        nonlocal accumulated_text, words_this_turn
         status.write(text)
         accumulated_text = ""
+        words_this_turn = 0
         answer_area.empty()
 
-    def on_position(fen: str) -> None:
-        try:
-            new_board = chess.Board(fen)
-        except ValueError:
-            return  # the model can pass a malformed FEN to the tool call
-            # even though evaluate_chess_position's own validation later
-            # rejects it for that turn -- leave the displayed board as it was.
-        st.session_state.board = new_board
-        # A fresh chess.Board(fen) has no move history, so an illegal-move
-        # warning from before this update no longer corresponds to anything
-        # real on the new board.
-        st.session_state.last_illegal_attempt = None
-        st.session_state.board_generation += 1
+    def on_position(fen: str, *, label: str | None = None, update_board: bool = True) -> None:
+        if update_board:
+            try:
+                new_board = chess.Board(fen)
+            except ValueError:
+                return  # the model can pass a malformed FEN to the tool call
+                # even though evaluate_chess_position's own validation later
+                # rejects it for that turn -- leave the displayed board as it was.
+            st.session_state.board = new_board
+            # A fresh chess.Board(fen) has no move history, so an illegal-move
+            # warning from before this update no longer corresponds to
+            # anything real on the new board.
+            st.session_state.last_illegal_attempt = None
+            st.session_state.board_generation += 1
+        # show_opening_line already guarantees a valid fen (replayed via
+        # python-chess before this is ever called), so no re-validation
+        # needed on the update_board=False path.
+        if not touched_fens or touched_fens[-1][0] != fen:
+            touched_fens.append((fen, label))
 
-    answer = ask_agent(question, on_step=on_step, on_chunk=on_chunk, on_position=on_position)
+    answer = ask_agent(
+        question, on_step=on_step, on_chunk=on_chunk, on_position=on_position, history=history
+    )
+
+    if not answer.strip():
+        # The tool-calling loop can end on a turn whose only content was a
+        # tool call (see chess_agent.ask()'s docstring on how final_text is
+        # tracked) -- rare, but when it happens the chat bubble would
+        # otherwise render nothing at all with no indication anything went
+        # wrong. A short, honest placeholder beats silence.
+        answer = (
+            "Something interrupted this response before it finished -- "
+            "try asking again, possibly with a narrower question."
+        )
+        answer_area.markdown(answer)
 
     status.update(label="Done", state="complete", expanded=False)
     stop_placeholder.empty()
-    return answer
+    return answer, touched_fens
 
 
 def _render_resource_recommendations() -> None:
@@ -214,6 +270,54 @@ def _render_resource_recommendations() -> None:
             st.code(rec.pgn, language=None)
 
 
+def render_position_thumbnail(fen: str, label: str | None = None) -> None:
+    """A small, plain board diagram for a position a tool call actually
+    verified (see ask_with_status's touched_fens) -- no highlights or
+    arrows yet, those need annotation data this app's ingestion pipeline
+    currently discards (see CLAUDE.md's Board input note). Malformed FENs
+    are the caller's problem to guard against; this assumes a valid one.
+    """
+    if label:
+        st.caption(label)
+    svg = chess.svg.board(board=chess.Board(fen), size=180)
+    st.components.v1.html(svg, height=195)
+
+
+def _to_model_text(content: str, fen_context: str | None) -> str:
+    """The exact text sent to the model for one user turn -- content as
+    typed, with the "Current board position" prefix prepended when the
+    turn was about a specific position (see chess_agent.SYSTEM_PROMPT).
+    Used both for the current turn and to reconstruct past ones for
+    history, so the two can never drift apart.
+    """
+    if fen_context is not None:
+        return f"Current board position: {fen_context}\n\n{content}"
+    return content
+
+
+# Bounds how many prior chat_history entries get replayed as context on each
+# call -- unbounded history would grow every question's token cost (and
+# latency/cost) linearly with the whole session's length. 10 entries is 5
+# user/assistant exchanges, generous for a follow-up-question demo without
+# letting a long session's cost run away.
+MAX_HISTORY_MESSAGES = 10
+
+
+def _build_message_history() -> list[dict[str, str]]:
+    """The most recent chat_history entries, translated into the plain
+    {"role", "content"} dicts ask() expects -- see ask()'s own docstring
+    for why this replays only final text, not full tool-call traces.
+    """
+    recent = st.session_state.chat_history[-MAX_HISTORY_MESSAGES:]
+    return [
+        {
+            "role": role,
+            "content": _to_model_text(content, fen_context) if role == "user" else content,
+        }
+        for role, content, fen_context, _ in recent
+    ]
+
+
 def _submit_question(question: str, *, fen_context: str | None = None) -> None:
     """Append a user turn, get the agent's answer, and append it -- the one
     path both the main chat input and the board-side "ask about this
@@ -236,19 +340,18 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
     show which position a question was about, without the FEN prefix itself
     ever appearing as if the user had typed it.
     """
-    st.session_state.chat_history.append(("user", question, fen_context))
+    history = _build_message_history()  # prior turns, before this one is appended below
+    st.session_state.chat_history.append(("user", question, fen_context, []))
     with st.chat_message("user", avatar=_CHAT_AVATARS["user"]):
         st.markdown(question)
         if fen_context is not None:
             st.caption(f"Position: `{fen_context}`")
-    sent_question = (
-        f"Current board position: {fen_context}\n\n{question}"
-        if fen_context is not None
-        else question
-    )
+    sent_question = _to_model_text(question, fen_context)
     with st.chat_message("assistant", avatar=_CHAT_AVATARS["assistant"]):
-        answer = ask_with_status(sent_question)
-    st.session_state.chat_history.append(("assistant", answer, None))
+        answer, touched_fens = ask_with_status(sent_question, history=history)
+        for fen, label in touched_fens[:4]:
+            render_position_thumbnail(fen, label)
+    st.session_state.chat_history.append(("assistant", answer, None, touched_fens))
     st.session_state.resource_recommendations = None
 
 
@@ -273,11 +376,13 @@ def render_chat_tab() -> None:
     chat_col, board_col = st.columns([3, 2])
 
     with chat_col:
-        for role, content, fen in st.session_state.chat_history:
+        for role, content, fen, image_fens in st.session_state.chat_history:
             with st.chat_message(role, avatar=_CHAT_AVATARS[role]):
                 st.markdown(content)
                 if fen is not None:
                     st.caption(f"Position: `{fen}`")
+                for image_fen, image_label in image_fens[:4]:
+                    render_position_thumbnail(image_fen, image_label)
 
         pending = st.session_state.pending_board_question
         if pending is not None:

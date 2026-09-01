@@ -23,6 +23,7 @@ class SimilarGame:
     eco_code: str | None
     result: str | None
     matching_plies: int
+    fen_after: str | None
 
 
 def find_similar_games(
@@ -55,9 +56,12 @@ def find_similar_games(
         )
         SELECT
             g.game_id, g.white, g.black, g.year, g.eco_code, g.result,
-            COALESCE(matched.first_mismatch_ply - 1, matched.plies_checked) AS match_length
+            COALESCE(matched.first_mismatch_ply - 1, matched.plies_checked) AS match_length,
+            fm.fen_after
         FROM matched
         JOIN games g ON g.game_id = matched.game_id
+        LEFT JOIN moves fm ON fm.game_id = matched.game_id
+            AND fm.ply = COALESCE(matched.first_mismatch_ply - 1, matched.plies_checked)
         ORDER BY match_length DESC, g.game_id
         LIMIT %s
     """
@@ -75,6 +79,7 @@ def find_similar_games(
             eco_code=eco_code,
             result=result,
             matching_plies=match_length,
+            fen_after=fen_after,
         )
-        for game_id, white, black, year, eco_code, result, match_length in rows
+        for game_id, white, black, year, eco_code, result, match_length, fen_after in rows
     ]
