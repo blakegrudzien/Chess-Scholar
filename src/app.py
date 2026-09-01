@@ -75,8 +75,8 @@ STREAM_WORD_DELAY_SECONDS = 0.02
 # renderer already used for the board tab, instead of depending on emoji
 # font coverage across viewers' systems.
 _CHAT_AVATARS = {
-    "user": chess.svg.piece(chess.Piece(chess.KNIGHT, chess.BLACK), size=32),
-    "assistant": chess.svg.piece(chess.Piece(chess.KNIGHT, chess.WHITE), size=32),
+    "user": chess.svg.piece(chess.Piece(chess.PAWN, chess.BLACK), size=32),
+    "assistant": chess.svg.piece(chess.Piece(chess.BISHOP, chess.WHITE), size=32),
 }
 
 st.set_page_config(page_title="Chess RAG Assistant", layout="wide")
@@ -155,24 +155,45 @@ st.html("""
     line-height: 1.55;
 }
 
-/* Chat bubbles: targets the real data-testid Streamlit renders (confirmed
-   against live DOM), not the emotion-cache hash on the message container
-   itself -- that hash differs between the user and assistant variants, but
-   :has() keyed on the stable, semantic avatar testid is far less likely to
-   break on a Streamlit upgrade than depending on which exact hash a given
-   build happens to generate. */
-div[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+/* Chat bubbles: originally keyed on stChatMessageAvatarUser/Assistant, but
+   that testid only exists for Streamlit's own built-in emoji/icon avatars
+   (confirmed by reading the compiled frontend) -- once the avatar became a
+   custom SVG image (see _CHAT_AVATARS), Streamlit renders a bare avatar
+   image element with no testid at all, and these rules silently stopped
+   matching anything. Do not write anything that looks like an HTML tag
+   inside comments in this style block, angle brackets included -- the
+   st.html() sanitizer silently drops the whole block whenever it finds
+   one, even inside a CSS comment (confirmed by bisection: a single such
+   comment reproduces the drop in total isolation, elsewhere in this file).
+   stChatMessageContent's aria-label is set unconditionally to
+   "Chat message from {role}" regardless of avatar type, so it stays
+   correct even if the avatar mechanism changes again later. */
+div[data-testid="stChatMessage"]:has(
+    [data-testid="stChatMessageContent"][aria-label="Chat message from user"]
+) {
     background: #6B1E2B;
     border-radius: 2px;
 }
-div[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"])
-    [data-testid="stMarkdownContainer"] {
+div[data-testid="stChatMessage"]:has(
+    [data-testid="stChatMessageContent"][aria-label="Chat message from user"]
+) [data-testid="stMarkdownContainer"] {
     color: #EDE1CC;
 }
-div[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) {
-    background: #F1E8D4;
+div[data-testid="stChatMessage"]:has(
+    [data-testid="stChatMessageContent"][aria-label="Chat message from assistant"]
+) {
+    /* #F1E8D4 against the page's own #E8DCC3 background read as almost the
+       same tone -- reusing #DACBA8 (already the chat-input and inline-code
+       "recessed surface" color elsewhere on the page) plus the same inset
+       shadow the chat input uses gives every sunken/carved surface in the
+       app one consistent color and depth language instead of a bespoke
+       near-miss just for this bubble. */
+    background: #DACBA8;
     border: 1px solid #A88F72;
     border-radius: 2px;
+    box-shadow:
+        inset 0 2px 3px rgba(43, 31, 23, 0.30),
+        inset 0 -1px 0 rgba(237, 225, 204, 0.35);
 }
 
 /* Code blocks (st.code(), language=None everywhere it's used -- FEN, PGN,
@@ -202,6 +223,42 @@ code:not(pre code) {
     padding: 0.1em 0.35em;
     border-radius: 2px;
     font-weight: 500;
+}
+
+/* The top-right "Running..." spinner (data-testid confirmed by reading
+   Streamlit's compiled frontend directly) is a framework chrome element,
+   not part of this app's own designed surface -- hidden rather than
+   themed. */
+div[data-testid="stStatusWidget"] {
+    display: none;
+}
+
+/* The Lichess study embed (st.iframe) renders with square corners by
+   default, breaking the 2px radius (config.toml's baseRadius) used
+   everywhere else on the page -- overflow: hidden is needed alongside
+   border-radius since a border-radius alone doesn't clip an iframe's own
+   rendered content. */
+div[data-testid="stIFrame"] {
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+/* Quarter-sawn grain: three layered streak patterns at slightly different
+   angles and widths, reading as sanded walnut planks rather than a flat
+   tint, so the empty parchment behind the chat panel isn't bare. Layered
+   as background-image on top of config.toml's backgroundColor, not a
+   replacement for it. */
+div[data-testid="stApp"] {
+    background-image:
+        repeating-linear-gradient(91deg,
+            rgba(107, 74, 44, 0.05) 0px, rgba(107, 74, 44, 0.05) 1px,
+            transparent 1px, transparent 7px),
+        repeating-linear-gradient(89deg,
+            rgba(43, 31, 23, 0.04) 0px, rgba(43, 31, 23, 0.04) 2px,
+            transparent 2px, transparent 23px),
+        repeating-linear-gradient(90.5deg,
+            rgba(168, 143, 114, 0.06) 0px, rgba(168, 143, 114, 0.06) 1px,
+            transparent 1px, transparent 41px);
 }
 </style>
 """)
