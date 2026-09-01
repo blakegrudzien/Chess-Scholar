@@ -256,12 +256,13 @@ def test_find_similar_corpus_games_surfaces_invalid_input():
     assert "Invalid input" in result
 
 
-def _tool_use_block(name: str) -> MagicMock:
+def _tool_use_block(name: str, input: dict | None = None) -> MagicMock:
     # MagicMock(name=...) is reserved by unittest.mock for the mock's own
     # repr, not for setting a real .name attribute -- has to be set after
     # construction, or block.name silently returns the internal mock name.
     block = MagicMock(type="tool_use")
     block.name = name
+    block.input = input or {}
     return block
 
 
@@ -374,6 +375,60 @@ def test_ask_does_not_call_on_step_for_a_text_only_turn():
 
 def test_ask_without_on_step_does_not_error_on_a_tool_call_turn():
     tool_turn = _stream_turn([_tool_use_block("search_annotations")])
+    final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
+
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_turn]
+
+    result = ask("q", MagicMock(), MagicMock(), MagicMock(), client=client)
+
+    assert result == "Final answer."
+
+
+def test_ask_reports_position_via_on_position():
+    tool_turn = _stream_turn(
+        [_tool_use_block("evaluate_chess_position", {"fen": "8/8/8/8/8/8/8/K6k w - - 0 1"})]
+    )
+    final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
+
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_turn]
+
+    positions = []
+    ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_position=positions.append)
+
+    assert positions == ["8/8/8/8/8/8/8/K6k w - - 0 1"]
+
+
+def test_ask_does_not_call_on_position_for_other_tools():
+    tool_turn = _stream_turn([_tool_use_block("search_annotations", {"query": "isolated pawns"})])
+    final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
+
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_turn]
+
+    positions = []
+    ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_position=positions.append)
+
+    assert positions == []
+
+
+def test_ask_calls_on_position_for_every_evaluate_call_across_turns():
+    first_turn = _stream_turn([_tool_use_block("evaluate_chess_position", {"fen": "fen-one"})])
+    second_turn = _stream_turn([_tool_use_block("evaluate_chess_position", {"fen": "fen-two"})])
+    final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
+
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [first_turn, second_turn, final_turn]
+
+    positions = []
+    ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_position=positions.append)
+
+    assert positions == ["fen-one", "fen-two"]
+
+
+def test_ask_without_on_position_does_not_error_on_an_evaluate_call_turn():
+    tool_turn = _stream_turn([_tool_use_block("evaluate_chess_position", {"fen": "some-fen"})])
     final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
 
     client = MagicMock()

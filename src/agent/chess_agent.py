@@ -24,7 +24,7 @@ from src.search.structured_search import common_moves_at_ply, eco_summary, piece
 MODEL = "claude-sonnet-5"
 MAX_TOKENS = 4096
 
-SYSTEM_PROMPT = """You are a chess research assistant with access to a corpus \
+SYSTEM_PROMPT = """You are a chess research assistant/mentor with access to a corpus \
 of grandmaster games, book/annotation text, and a chess engine, via tools.
 
 Tool selection:
@@ -51,6 +51,11 @@ Before calling a tool, state in one short sentence which layer you're using \
 and why -- e.g. "Checking Layer 2 for strategic ideas about isolated pawns." \
 This sentence is shown to the user live while they wait; keep it brief and \
 write it as a standalone status update, not as part of your eventual answer.
+
+A user message may start with a line like "Current board position: <FEN>" -- \
+this means they set up that position on their own board and are asking about \
+it specifically. Treat it as the position in question, not something to \
+independently derive or guess at.
 """
 
 # Fallback status text per tool, shown if a turn's tool call arrives with no
@@ -272,6 +277,18 @@ def _report_tool_steps(message, on_step: Callable[[str], None]) -> None:
     on_step(rationale)
 
 
+def _report_position_update(message, on_position: Callable[[str], None]) -> None:
+    """Surface the FEN behind a turn's evaluate_chess_position call, if any --
+    the only tool of the six that takes a real board position rather than an
+    ECO code, free-text query, or move list, making it the one reliable
+    signal for "the position currently under discussion."
+    """
+    for block in message.content:
+        if block.type == "tool_use" and block.name == "evaluate_chess_position":
+            on_position(block.input["fen"])
+            return
+
+
 def ask(
     question: str,
     db_pool: psycopg2.pool.ThreadedConnectionPool,
@@ -280,6 +297,7 @@ def ask(
     client: anthropic.Anthropic | None = None,
     on_step: Callable[[str], None] | None = None,
     on_chunk: Callable[[str], None] | None = None,
+    on_position: Callable[[str], None] | None = None,
 ) -> str:
     """Answer one question, routing across the four layers via tool-calling.
     Returns the final response text.
@@ -298,6 +316,10 @@ def ask(
     on_chunk fires for both, and a caller distinguishes them after the fact:
     on_step firing for a turn means its chunks were the rationale, not the
     final answer.
+
+    If `on_position` is given, it's called with the FEN whenever a turn
+    calls evaluate_chess_position -- meant for a caller to keep a displayed
+    board in sync with whatever position the conversation just touched.
     """
     client = client or anthropic.Anthropic()
     tools = build_tools(db_pool, engine_pool, voyage_client)
@@ -319,6 +341,8 @@ def ask(
         message = turn.get_final_message()
         if on_step is not None:
             _report_tool_steps(message, on_step)
+        if on_position is not None:
+            _report_position_update(message, on_position)
         final_text = "".join(block.text for block in message.content if block.type == "text")
 
     return final_text

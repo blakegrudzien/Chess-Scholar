@@ -261,18 +261,20 @@ div[data-testid="stApp"] {
             transparent 1px, transparent 41px);
 }
 
-/* layout="wide" is needed for the board tab's 8-column grid, but it also
-   stretches chat prose edge to edge on a wide window -- well past a
-   comfortable reading measure. Capping just the panel that contains the
-   chat input (rather than assuming DOM order among the three tab panels,
-   which didn't actually match :first-of-type in practice) keeps the board
-   and upload tabs at full width while giving chat text a fixed column.
-   No margin: auto -- the panel already starts at the same left edge as
-   the page title and tab bar above it (same parent padding), so capping
-   width alone keeps that edge aligned instead of centering the panel
-   into a column visually disconnected from the header above it. */
+/* layout="wide" is needed for the upload tab's file uploader and the
+   board panel's 8-column position-editor grid, but it also stretches the
+   chat/board row edge to edge on a wide window. Capping the panel that
+   contains the chat input (rather than assuming DOM order among the tab
+   panels, which didn't actually match :first-of-type in practice) keeps
+   the upload tab at full width while giving the chat+board row a fixed
+   total measure -- 1100px, split roughly 3:2 between chat and board by
+   the st.columns call itself, not by CSS. No margin: auto -- the panel
+   already starts at the same left edge as the page title and tab bar
+   above it (same parent padding), so capping width alone keeps that edge
+   aligned instead of centering the panel into a column visually
+   disconnected from the header above it. */
 div[data-testid="stTabPanel"]:has([data-testid="stChatInputTextArea"]) {
-    max-width: 720px;
+    max-width: 1100px;
 }
 </style>
 """)
@@ -302,6 +304,7 @@ def ask_agent(
     question: str,
     on_step: Callable[[str], None] | None = None,
     on_chunk: Callable[[str], None] | None = None,
+    on_position: Callable[[str], None] | None = None,
 ) -> str:
     return ask(
         question,
@@ -311,6 +314,7 @@ def ask_agent(
         client=_get_anthropic_client(),
         on_step=on_step,
         on_chunk=on_chunk,
+        on_position=on_position,
     )
 
 
@@ -364,7 +368,21 @@ def _ask_with_status(question: str) -> str:
         accumulated_text = ""
         answer_area.empty()
 
-    answer = ask_agent(question, on_step=on_step, on_chunk=on_chunk)
+    def on_position(fen: str) -> None:
+        try:
+            new_board = chess.Board(fen)
+        except ValueError:
+            return  # the model can pass a malformed FEN to the tool call
+            # even though evaluate_chess_position's own validation later
+            # rejects it for that turn -- leave the displayed board as it was.
+        st.session_state.board = new_board
+        # A fresh chess.Board(fen) has no move history, so a selected square
+        # or illegal-move warning from before this update no longer
+        # corresponds to anything real on the new board.
+        st.session_state.selected_square = None
+        st.session_state.last_illegal_attempt = None
+
+    answer = ask_agent(question, on_step=on_step, on_chunk=on_chunk, on_position=on_position)
 
     status.update(label="Done", state="complete", expanded=False)
     stop_placeholder.empty()
@@ -426,7 +444,7 @@ def _render_resource_recommendations() -> None:
                 <p class="rec-blurb">{html.escape(rec.blurb)}</p>
             </div>
             """)
-            st.iframe(rec.embed_url, height=400)
+            st.iframe(rec.embed_url, height=320)
         elif isinstance(rec, ChessbaseGameRecommendation):
             st.html(f"""
             <div class="rec-card">
@@ -440,6 +458,44 @@ def _render_resource_recommendations() -> None:
             st.code(rec.pgn, language=None)
 
 
+def _submit_question(question: str, *, fen_context: str | None = None) -> None:
+    """Append a user turn, get the agent's answer, and append it -- the one
+    path both the main chat input and the board-side "ask about this
+    position" box go through, so a follow-up question either way lands in
+    the same transcript instead of two disconnected conversations.
+
+    Only ever called from inside chat_col (see render_chat_tab and its
+    "pending_board_question" handling below) -- never directly from a
+    board-side button. _ask_with_status renders live UI (a status panel, a
+    streaming answer area) at whatever point in the layout it's called from,
+    so calling it directly from a button inside the narrow board column
+    would put that live UI in the board column instead of the chat
+    transcript. Board-side triggers stash (question, fen) in
+    st.session_state.pending_board_question and rerun instead, so the
+    actual submission always happens from chat_col on the next script pass.
+
+    fen_context, when given, is sent to the model as part of the question
+    (see chess_agent.SYSTEM_PROMPT's "Current board position" instruction)
+    and stored alongside the question in chat_history so the transcript can
+    show which position a question was about, without the FEN prefix itself
+    ever appearing as if the user had typed it.
+    """
+    st.session_state.chat_history.append(("user", question, fen_context))
+    with st.chat_message("user", avatar=_CHAT_AVATARS["user"]):
+        st.markdown(question)
+        if fen_context is not None:
+            st.caption(f"Position: `{fen_context}`")
+    sent_question = (
+        f"Current board position: {fen_context}\n\n{question}"
+        if fen_context is not None
+        else question
+    )
+    with st.chat_message("assistant", avatar=_CHAT_AVATARS["assistant"]):
+        answer = _ask_with_status(sent_question)
+    st.session_state.chat_history.append(("assistant", answer, None))
+    st.session_state.resource_recommendations = None
+
+
 def render_chat_tab() -> None:
     st.caption(
         "Answers synthesize retrieved human commentary and engine output -- "
@@ -449,22 +505,36 @@ def render_chat_tab() -> None:
         st.session_state.chat_history = []
     if "resource_recommendations" not in st.session_state:
         st.session_state.resource_recommendations = None
+    if "board" not in st.session_state:
+        st.session_state.board = chess.Board()
+    if "selected_square" not in st.session_state:
+        st.session_state.selected_square = None
+    if "last_illegal_attempt" not in st.session_state:
+        st.session_state.last_illegal_attempt = None
+    if "pending_board_question" not in st.session_state:
+        st.session_state.pending_board_question = None
 
-    for role, content in st.session_state.chat_history:
-        with st.chat_message(role, avatar=_CHAT_AVATARS[role]):
-            st.markdown(content)
+    chat_col, board_col = st.columns([3, 2])
 
-    question = st.chat_input("Ask about openings, positions, or chess history...")
-    if question:
-        st.session_state.chat_history.append(("user", question))
-        with st.chat_message("user", avatar=_CHAT_AVATARS["user"]):
-            st.markdown(question)
-        with st.chat_message("assistant", avatar=_CHAT_AVATARS["assistant"]):
-            answer = _ask_with_status(question)
-        st.session_state.chat_history.append(("assistant", answer))
-        st.session_state.resource_recommendations = None
+    with chat_col:
+        for role, content, fen in st.session_state.chat_history:
+            with st.chat_message(role, avatar=_CHAT_AVATARS[role]):
+                st.markdown(content)
+                if fen is not None:
+                    st.caption(f"Position: `{fen}`")
 
-    _render_resource_recommendations()
+        pending = st.session_state.pending_board_question
+        if pending is not None:
+            st.session_state.pending_board_question = None
+            pending_question, pending_fen = pending
+            _submit_question(pending_question, fen_context=pending_fen)
+
+        question = st.chat_input("Ask about openings, positions, or chess history...")
+        if question:
+            _submit_question(question)
+
+    with board_col:
+        _render_board_panel()
 
 
 def handle_square_click(square: chess.Square) -> None:
@@ -492,14 +562,17 @@ def handle_square_click(square: chess.Square) -> None:
     st.session_state.selected_square = None
 
 
-def render_board_tab() -> None:
-    if "board" not in st.session_state:
-        st.session_state.board = chess.Board()
-    if "selected_square" not in st.session_state:
-        st.session_state.selected_square = None
-    if "last_illegal_attempt" not in st.session_state:
-        st.session_state.last_illegal_attempt = None
+def _render_board_panel() -> None:
+    """The board column: a compact display of the position under
+    discussion, plus a quick-eval button and an expander for setting up a
+    custom position to ask about.
 
+    Neither button here calls _ask_with_status directly -- both stash a
+    (question, fen) pair in st.session_state.pending_board_question and
+    st.rerun() instead, so the actual submission (and its live status/
+    streaming UI) happens from inside chat_col on the next script pass, not
+    in this narrow column. See _submit_question's docstring for why.
+    """
     board: chess.Board = st.session_state.board
     selected = st.session_state.selected_square
 
@@ -519,50 +592,65 @@ def render_board_tab() -> None:
         )
     last_move = board.move_stack[-1] if board.move_stack else None
 
-    board_col, controls_col = st.columns([2, 1])
-    with board_col:
-        svg = chess.svg.board(
-            board=board,
-            size=400,
-            fill=fill,
-            squares=legal_destinations,
-            lastmove=last_move,
+    # size=300, down from the old standalone tab's 400 -- this board now
+    # shares horizontal space with chat instead of having the full page
+    # width to itself.
+    svg = chess.svg.board(
+        board=board,
+        size=300,
+        fill=fill,
+        squares=legal_destinations,
+        lastmove=last_move,
+    )
+    st.components.v1.html(svg, height=325)
+    st.caption(f"Turn: {'White' if board.turn else 'Black'}")
+    st.code(board.fen(), language=None)
+    if st.session_state.last_illegal_attempt is not None:
+        st.warning("That move isn't legal. Try again.")
+
+    if st.button("Evaluate this position with Stockfish", type="primary"):
+        st.session_state.pending_board_question = (
+            "Evaluate this chess position and tell me the best move. "
+            "Use the engine, don't just guess.",
+            board.fen(),
         )
-        st.components.v1.html(svg, height=430)
-        st.caption(f"Turn: {'White' if board.turn else 'Black'}")
-        st.code(board.fen(), language=None)
-        if st.session_state.last_illegal_attempt is not None:
-            st.warning("That move isn't legal. Try again.")
+        st.rerun()
 
-    with controls_col:
-        if st.button("Reset board"):
-            st.session_state.board = chess.Board()
-            st.session_state.selected_square = None
-            st.session_state.last_illegal_attempt = None
-            st.rerun()
-        if st.button("Undo last move", disabled=not board.move_stack):
-            board.pop()
-            st.session_state.selected_square = None
-            st.rerun()
+    with st.expander("Set up a position to ask about"):
+        st.write("Click a square to select a piece, then click a destination square to move it.")
+        for rank in range(8, 0, -1):
+            cols = st.columns(8)
+            for i, file_letter in enumerate("abcdefgh"):
+                square = chess.parse_square(f"{file_letter}{rank}")
+                piece = board.piece_at(square)
+                label = piece.unicode_symbol() if piece else "·"
+                with cols[i]:
+                    if st.button(label, key=f"sq_{file_letter}{rank}"):
+                        handle_square_click(square)
+                        st.rerun()
 
-    st.write("Click a square to select a piece, then click a destination square to move it.")
-    for rank in range(8, 0, -1):
-        cols = st.columns(8)
-        for i, file_letter in enumerate("abcdefgh"):
-            square = chess.parse_square(f"{file_letter}{rank}")
-            piece = board.piece_at(square)
-            label = piece.unicode_symbol() if piece else "·"
-            with cols[i]:
-                if st.button(label, key=f"sq_{file_letter}{rank}"):
-                    handle_square_click(square)
-                    st.rerun()
+        reset_col, undo_col = st.columns(2)
+        with reset_col:
+            if st.button("Reset board"):
+                st.session_state.board = chess.Board()
+                st.session_state.selected_square = None
+                st.session_state.last_illegal_attempt = None
+                st.rerun()
+        with undo_col:
+            if st.button("Undo last move", disabled=not board.move_stack):
+                board.pop()
+                st.session_state.selected_square = None
+                st.rerun()
+
+        with st.form("position_question_form", clear_on_submit=True):
+            position_question = st.text_input("Ask about this position...")
+            asked = st.form_submit_button("Ask")
+        if asked and position_question:
+            st.session_state.pending_board_question = (position_question, board.fen())
+            st.rerun()
 
     st.divider()
-    if st.button("Evaluate this position with Stockfish", type="primary"):
-        _ask_with_status(
-            f"Evaluate this chess position and tell me the best move: {board.fen()}. "
-            "Use the engine, don't just guess."
-        )
+    _render_resource_recommendations()
 
 
 def render_pgn_upload_tab() -> None:
@@ -610,11 +698,9 @@ def render_pgn_upload_tab() -> None:
 
 def main() -> None:
     st.title("Chess RAG Assistant")
-    chat_tab, board_tab, upload_tab = st.tabs(["Chat", "Board Position", "Analyze Your Game"])
+    chat_tab, upload_tab = st.tabs(["Chat", "Analyze Your Game"])
     with chat_tab:
         render_chat_tab()
-    with board_tab:
-        render_board_tab()
     with upload_tab:
         render_pgn_upload_tab()
 
