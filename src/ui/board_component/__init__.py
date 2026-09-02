@@ -44,6 +44,18 @@ _chess_board_component = st.components.v2.component(
     isolate_styles=False,
 )
 
+# Streamlit gives the element container Python's `height=` renders into
+# overflow-y: auto (confirmed by inspecting the live DOM: stElementContainer,
+# not this component itself, is what has the scrollbar) -- fine as long as
+# the actual chessboard.js content never exceeds that exact pixel height,
+# but a brief mismatch (the container's declared height and the JS side's
+# actual rendered content settling on different frames, right after a
+# rebuild) is enough to trip it into showing a scrollbar for a moment before
+# it corrects itself. A small buffer between the requested container height
+# and the board's own true pixel size (still exactly `size`, unaffected)
+# gives that transient mismatch somewhere to go instead of overflowing.
+_HEIGHT_BUFFER_PX = 10
+
 
 def chess_board(
     fen: str, *, size: int = 300, generation: int = 0, key: str | None = None
@@ -66,7 +78,7 @@ def chess_board(
     result = _chess_board_component(
         data={"fen": fen, "size": size, "generation": generation},
         key=key,
-        height=size,
+        height=size + _HEIGHT_BUFFER_PX,
         on_drop_change=lambda: None,
     )
     return result.drop

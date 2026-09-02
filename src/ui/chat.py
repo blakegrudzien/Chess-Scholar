@@ -544,15 +544,20 @@ def _render_board_panel() -> None:
     """
     board: chess.Board = st.session_state.board
 
-    # size=300, down from the old standalone tab's 400 -- this board shares
+    # size=340, down from the old standalone tab's 400 -- this board shares
     # horizontal space with chat instead of having the full page to itself.
-    drop = chess_board(board.fen(), size=300, generation=st.session_state.board_generation)
+    drop = chess_board(board.fen(), size=340, generation=st.session_state.board_generation)
     if drop is not None:
         _attempt_move(drop["from"], drop["to"])
         st.rerun()
 
     st.caption(f"Turn: {'White' if board.turn else 'Black'}")
-    st.code(board.fen(), language=None)
+    # A caption with inline code, not st.code() -- a single short FEN line
+    # doesn't need its own full dark code panel (heavy padding, a copy
+    # button) sitting under the board; the same subtle inline-code style
+    # already used for the "Position: `{fen}`" captions elsewhere in this
+    # file reads as plain, quiet text instead of a block that sticks out.
+    st.caption(f"FEN: `{board.fen()}`")
     if st.session_state.last_illegal_attempt is not None:
         st.warning("That move isn't legal. Try again.")
 

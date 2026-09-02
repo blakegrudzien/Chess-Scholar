@@ -152,15 +152,24 @@ def _drag(page, from_square: str, to_square: str) -> None:
     page.mouse.up()
 
 
+# The FEN under the board is an `st.caption` with inline `` `code` ``
+# (see _render_board_panel), not an st.code() block, so it has no <pre> of
+# its own -- find the caption whose text starts with "FEN:" and read its
+# nested <code> element instead of matching on tag alone, since multiple
+# stCaptionContainer elements exist on the page (e.g. "Turn: White").
+_FEN_CAPTION_JS = (
+    "[...document.querySelectorAll('[data-testid=\"stCaptionContainer\"]')]"
+    ".find(c => c.textContent.startsWith('FEN:'))?.querySelector('code')"
+)
+
+
 def _board_fen(page) -> str:
-    return page.evaluate("document.querySelector('pre').textContent.trim()")
+    return page.evaluate(f"{_FEN_CAPTION_JS}?.textContent.trim()")
 
 
 def test_dragging_a_legal_move_updates_the_fen(page) -> None:
     _drag(page, "e2", "e4")
-    page.wait_for_function(
-        "document.querySelector('pre').textContent.includes('4P3')", timeout=10000
-    )
+    page.wait_for_function(f"{_FEN_CAPTION_JS}?.textContent.includes('4P3')", timeout=10000)
     assert _board_fen(page).startswith("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR")
 
 

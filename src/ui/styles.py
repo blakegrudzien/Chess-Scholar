@@ -55,6 +55,45 @@ def _apply_theme_css() -> None:
     border-radius: 2px;
 }
 
+/* Primary buttons (Evaluate this position, Find related resources) render
+   with the theme's own primaryColor but flat -- no depth, unlike every
+   other surface this app treats as "carved" (chat input above, code
+   blocks, the user chat bubble). stBaseButton-primary is a real Streamlit
+   testid, not a generated Emotion hash. */
+button[data-testid="stBaseButton-primary"] {
+    box-shadow:
+        inset 0 2px 3px rgba(0, 0, 0, 0.35),
+        inset 0 -1px 0 rgba(237, 225, 204, 0.2);
+}
+
+/* Reset board / Undo last move are plain (kind="secondary") buttons --
+   light surfaces, so this reuses the same lighter inset values as the
+   chat input / assistant bubble rather than the darker ones tuned for
+   primaryColor's oxblood. */
+button[data-testid="stBaseButton-secondary"] {
+    box-shadow:
+        inset 0 2px 3px rgba(43, 31, 23, 0.30),
+        inset 0 -1px 0 rgba(237, 225, 204, 0.35);
+}
+
+/* The "Ask about this position..." text input and its "Ask" submit
+   button (a form, not a plain button -- Streamlit gives form-submit
+   buttons their own kind, "secondaryFormSubmit", distinct from a plain
+   button's "secondary") are the two remaining flat surfaces next to the
+   now-inset chat input above; same treatment for visual consistency. */
+div[data-testid="stTextInputRootElement"] {
+    background: #DACBA8;
+    box-shadow:
+        inset 0 2px 3px rgba(43, 31, 23, 0.30),
+        inset 0 -1px 0 rgba(237, 225, 204, 0.35);
+    border-radius: 2px;
+}
+button[data-testid="stBaseButton-secondaryFormSubmit"] {
+    box-shadow:
+        inset 0 2px 3px rgba(43, 31, 23, 0.30),
+        inset 0 -1px 0 rgba(237, 225, 204, 0.35);
+}
+
 .rec-card {
     background: #F1E8D4;
     border: 1px solid #A88F72;
@@ -105,11 +144,33 @@ def _apply_theme_css() -> None:
    stChatMessageContent's aria-label is set unconditionally to
    "Chat message from {role}" regardless of avatar type, so it stays
    correct even if the avatar mechanism changes again later. */
+/* Avatar and message content are flex siblings with no gap by default --
+   wide content (a long line, a code span) runs right up against the
+   avatar's edge with no breathing room. */
+div[data-testid="stChatMessage"] {
+    gap: 14px;
+}
+/* stChatMessageContent stretches to fill the row but had no padding of
+   its own on the trailing edge -- wide lines ran flush against the
+   bubble's right edge (or, for the assistant, right up to the column's
+   own boundary, since that bubble's background/shadow live one level up
+   on stChatMessage, not on this element). */
+div[data-testid="stChatMessageContent"] {
+    padding-right: 16px;
+}
+
 div[data-testid="stChatMessage"]:has(
     [data-testid="stChatMessageContent"][aria-label="Chat message from user"]
 ) {
     background: #6B1E2B;
     border-radius: 2px;
+    /* Matches the assistant bubble's own inset shadow below -- everything
+       else this app treats as a "carved" surface (chat input, code
+       blocks, that bubble) gets this same depth language; the user
+       bubble was the one flat rectangle left. */
+    box-shadow:
+        inset 0 2px 3px rgba(0, 0, 0, 0.35),
+        inset 0 -1px 0 rgba(237, 225, 204, 0.2);
 }
 div[data-testid="stChatMessage"]:has(
     [data-testid="stChatMessageContent"][aria-label="Chat message from user"]
@@ -170,6 +231,23 @@ div[data-testid="stStatusWidget"] {
     display: none;
 }
 
+/* The draggable board's element container gets overflow-y: auto from
+   Streamlit itself (confirmed by inspecting the live DOM) -- fine as long
+   as chessboard.js's actual rendered content never exceeds the exact
+   pixel height Python requested, but real browsers don't guarantee that:
+   subpixel rounding at a given zoom/DPI, or a brief mismatch between the
+   container's declared height and the JS side settling into its own
+   layout right after a rebuild, is enough to trip it into showing a
+   scrollbar (board_component's own _HEIGHT_BUFFER_PX narrows how often
+   this happens but can't guarantee never). The board is never meant to
+   scroll internally -- forcing this off entirely is more robust than
+   chasing an exact pixel match. Scoped via :has() to the one element
+   container that actually holds the board, not every stElementContainer
+   on the page. */
+div[data-testid="stElementContainer"]:has([class*="board-"]) {
+    overflow-y: hidden !important;
+}
+
 /* The Lichess study embed (st.iframe) renders with square corners by
    default, breaking the 2px radius (config.toml's baseRadius) used
    everywhere else on the page -- overflow: hidden is needed alongside
@@ -204,14 +282,50 @@ div[data-testid="stApp"] {
    contains the chat input (rather than assuming DOM order among the tab
    panels, which didn't actually match :first-of-type in practice) keeps
    the upload tab at full width while giving the chat+board row a fixed
-   total measure -- 1100px, split roughly 3:2 between chat and board by
+   total measure -- 1300px, split roughly 3:2 between chat and board by
    the st.columns call itself, not by CSS. No margin: auto -- the panel
    already starts at the same left edge as the page title and tab bar
    above it (same parent padding), so capping width alone keeps that edge
    aligned instead of centering the panel into a column visually
    disconnected from the header above it. */
 div[data-testid="stTabPanel"]:has([data-testid="stChatInputTextArea"]) {
-    max-width: 1100px;
+    max-width: 1300px;
+}
+
+/* Streamlit's own built-in "Connection error" dialog (shown when the
+   WebSocket drops, e.g. the dev server got restarted) is injected by the
+   framework itself, not this app's own components, so on its own it
+   renders in Streamlit's default light theme instead of this app's
+   walnut/parchment identity -- confirmed by inspecting the actual dialog
+   DOM while it was showing. role="dialog" and stErrorCodeBlock are real,
+   stable attributes here, not generated Emotion hashes like most of the
+   rest of this file has to fall back to. */
+div[data-testid="stDialog"] section[role="dialog"] {
+    background: #2B1F17;
+    color: #EDE1CC;
+}
+div[data-testid="stDialog"] section[role="dialog"] h2 {
+    color: #EDE1CC;
+}
+div[data-testid="stDialog"] section[role="dialog"] > div {
+    padding: 8px 24px 24px;
+}
+div[data-testid="stDialog"] [data-testid="stErrorCodeBlock"] {
+    margin-top: 12px;
+}
+
+/* The top toolbar (Deploy button, hamburger main menu) is framework
+   chrome rendered in Streamlit's own default colors, not this app's
+   walnut identity. The icon SVGs use fill="currentColor", so setting
+   color here (not just on the toolbar background) is what actually
+   recolors them, not just the button hit areas around them. */
+div[data-testid="stToolbar"] {
+    background: #2B1F17;
+    color: #EDE1CC;
+}
+button[data-testid="stBaseButton-header"],
+button[data-testid="stMainMenuButton"] {
+    color: #EDE1CC;
 }
 </style>
 """)
