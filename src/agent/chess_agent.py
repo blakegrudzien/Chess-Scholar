@@ -6,7 +6,10 @@ hand-rolled intent classifier.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
+from typing import Protocol
 
 import anthropic
 import chess
@@ -20,6 +23,23 @@ from src.ingestion.db_loader import get_connection_with_timeout
 from src.personalization.similarity import find_similar_games as _find_similar_games
 from src.rag.vector_search import search_chunks
 from src.search.structured_search import common_moves_at_ply, eco_summary, piece_placement_frequency
+
+logger = logging.getLogger(__name__)
+
+
+class OnPosition(Protocol):
+    """The real shape every on_position callback across this codebase
+    implements. `Callable[..., None]` (the type used here before) type
+    checks any callable at all, keyword arguments included -- a typo'd
+    keyword like `lable=` at a call site would pass silently. A Protocol
+    with an explicit __call__ signature restores real checking of it, the
+    same as if this were a concrete class instead of a plain function.
+    """
+
+    def __call__(
+        self, fen: str, *, label: str | None = None, update_board: bool = True
+    ) -> None: ...
+
 
 MODEL = "claude-sonnet-5"
 # Doubled from the original 4096 after a real, reproduced failure: a turn
@@ -58,7 +78,12 @@ strategic-plan answers), proactively call this for the main line and any \
 named sidelines you discuss, instead of only describing moves in prose -- \
 readers should be able to see the position, not just read algebraic \
 notation. Scoped to opening theory, not a substitute for \
-evaluate_chess_position when judging whether a move or plan is good.
+evaluate_chess_position when judging whether a move or plan is good. In \
+your final answer, mark exactly where each diagram belongs by writing \
+[[diagram: <label>]] on its own line at that point, using the exact same \
+label text you passed to show_opening_line -- e.g. [[diagram: Main line]]. \
+Without this marker the diagram still appears, just at the end of your \
+answer instead of next to what it illustrates.
 
 Combine tools when a question calls for it (e.g. stats + commentary for an \
 opening-profile question). Be direct about which tool(s) you used.
@@ -108,7 +133,7 @@ def build_tools(
     db_pool: psycopg2.pool.ThreadedConnectionPool,
     engine_pool: EnginePool,
     voyage_client: voyageai.Client,
-    on_position: Callable[..., None] | None = None,
+    on_position: OnPosition | None = None,
 ) -> list[Callable]:
     """Build the tool functions for one session, bound to the given DB pool,
     Stockfish engine pool, and Voyage client.
@@ -345,7 +370,7 @@ def _report_tool_steps(message, on_step: Callable[[str], None]) -> None:
     on_step(rationale)
 
 
-def _report_position_update(message, on_position: Callable[..., None]) -> None:
+def _report_position_update(message, on_position: OnPosition) -> None:
     """Surface the FEN behind a turn's evaluate_chess_position call, if any --
     the only tool whose FEN is a direct *argument* the model supplies (as
     opposed to find_similar_corpus_games' DB-derived top match, or
@@ -426,7 +451,7 @@ def ask(
     client: anthropic.Anthropic | None = None,
     on_step: Callable[[str], None] | None = None,
     on_chunk: Callable[[str], None] | None = None,
-    on_position: Callable[..., None] | None = None,
+    on_position: OnPosition | None = None,
     history: list[dict[str, str]] | None = None,
 ) -> str:
     """Answer one question, routing across the four layers via tool-calling.
@@ -472,17 +497,30 @@ def ask(
 
     final_text = ""
     last_message = None
+    turn_count = 0
+    ask_start = time.monotonic()
     for turn in runner:
+        turn_start = time.monotonic()
         for delta in turn.text_stream:
             if on_chunk is not None:
                 on_chunk(delta)
         message = turn.get_final_message()
         last_message = message
+        turn_count += 1
+        tool_names = [block.name for block in message.content if block.type == "tool_use"]
+        # "It feels slower" is otherwise only ever noticed after the fact,
+        # from a user report -- this is the number to actually look at
+        # instead of guessing whether a change added round trips or a
+        # single turn just took longer to generate.
+        logger.info(
+            "turn %d: %.2fs, tools=%s", turn_count, time.monotonic() - turn_start, tool_names
+        )
         if on_step is not None:
             _report_tool_steps(message, on_step)
         if on_position is not None:
             _report_position_update(message, on_position)
         final_text = "".join(block.text for block in message.content if block.type == "text")
+    logger.info("ask() finished: %d turn(s), %.2fs total", turn_count, time.monotonic() - ask_start)
 
     if not final_text.strip() and last_message is not None:
         # Observed in practice, not just theoretically possible: the loop

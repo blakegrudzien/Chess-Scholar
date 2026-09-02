@@ -14,7 +14,7 @@ import chess
 import chess.svg
 import streamlit as st
 
-from src.agent.chess_agent import ask
+from src.agent.chess_agent import OnPosition, ask
 from src.recommendation.pipeline import (
     ChessbaseGameRecommendation,
     LichessStudyRecommendation,
@@ -32,6 +32,10 @@ from src.ui.resources import get_anthropic_client, get_db_pool, get_engine_pool,
 _WORD_SPLIT_RE = re.compile(r"\s*\S+\s*")
 STREAM_WORD_DELAY_SECONDS = 0.02
 
+# Matches the literal [[diagram: <label>]] marker SYSTEM_PROMPT instructs
+# the model to place inline in its own answer -- see _render_answer_content.
+_DIAGRAM_MARKER_RE = re.compile(r"\[\[diagram:\s*(.*?)\s*\]\]")
+
 # Caps the paced reveal to the first N words of any single turn's text --
 # without this, a long final answer (a real one ran 900+ words this
 # session) pays STREAM_WORD_DELAY_SECONDS on every single word with no
@@ -41,6 +45,11 @@ STREAM_WORD_DELAY_SECONDS = 0.02
 # long answer (or a tool-calling turn's rationale, which gets discarded by
 # on_step a moment later regardless) appears immediately.
 MAX_PACED_WORDS_PER_TURN = 40
+
+# Cap on how many inline diagrams one answer shows -- "main line + a couple
+# of popular sidelines" is usually 2-4 diagrams; a wall of positions on one
+# answer works against scannability.
+MAX_INLINE_DIAGRAMS = 4
 
 # Streamlit's default chat avatars are a generic face/robot Material icon --
 # a visual cue that reads as "generic AI chatbot," working against the
@@ -70,7 +79,7 @@ def ask_agent(
     question: str,
     on_step: Callable[[str], None] | None = None,
     on_chunk: Callable[[str], None] | None = None,
-    on_position: Callable[..., None] | None = None,
+    on_position: OnPosition | None = None,
     history: list[dict[str, str]] | None = None,
 ) -> str:
     return ask(
@@ -92,8 +101,11 @@ def ask_with_status(
     """Run ask_agent, showing each tool-calling step live in an st.status
     panel and streaming the final answer into view as it is generated,
     rather than a blank spinner followed by the whole answer appearing at
-    once. Renders the final answer itself, so callers should not render
-    `answer` again afterward.
+    once. Once the answer is complete, replaces the streamed plain text
+    with the same text interleaved with any position diagrams it
+    references (see _render_answer_content) -- so this renders everything
+    itself, and callers should not render `answer` or its diagrams again
+    afterward.
 
     history, if given, is prior turns the model should have context on --
     see _build_message_history and ask()'s own docstring. Without it, this
@@ -101,13 +113,14 @@ def ask_with_status(
 
     Returns (answer, touched_fens) -- touched_fens is every distinct
     (fen, label) pair on_position reported during this call (immediate
-    repeat fens deduped), in the order they came up, for a caller to render
-    as inline diagrams alongside the answer. label is None except for
-    show_opening_line's calls. Sourced from any tool call that touches a
-    real, verified position -- evaluate_chess_position, find_similar_corpus_
-    games's top match, and show_opening_line's replayed sequence (see
-    chess_agent.build_tools's on_position docstring for why each needs its
-    own plumbing).
+    repeat fens deduped), in the order they came up. label is None except
+    for show_opening_line's calls. Sourced from any tool call that touches
+    a real, verified position -- evaluate_chess_position, find_similar_
+    corpus_games's top match, and show_opening_line's replayed sequence
+    (see chess_agent.build_tools's on_position docstring for why each
+    needs its own plumbing). Returned only so a caller can store it in
+    chat_history for history replay -- already rendered here, not meant
+    to be rendered again.
 
     A tool-calling turn and the final answer both start with plain text
     (the system prompt asks for a one-sentence rationale before every tool
@@ -148,7 +161,11 @@ def ask_with_status(
         pieces = _WORD_SPLIT_RE.findall(delta) or [delta]
         for piece in pieces:
             accumulated_text += piece
-            answer_area.markdown(accumulated_text)
+            # Strip diagram markers before the live preview, not just at
+            # final render -- otherwise raw "[[diagram: ...]]" syntax
+            # flashes on screen for the word or two it takes the closing
+            # bracket to stream in.
+            answer_area.markdown(_DIAGRAM_MARKER_RE.sub("", accumulated_text))
             words_this_turn += 1
             if words_this_turn <= MAX_PACED_WORDS_PER_TURN:
                 time.sleep(STREAM_WORD_DELAY_SECONDS)
@@ -195,6 +212,14 @@ def ask_with_status(
             "try asking again, possibly with a narrower question."
         )
         answer_area.markdown(answer)
+    else:
+        # answer_area currently holds the plain streamed text (no
+        # diagrams) -- .empty() + re-entering .container() replaces that
+        # whole group of elements rather than appending after it, so the
+        # interleaved version takes its place instead of duplicating it.
+        answer_area.empty()
+        with answer_area.container():
+            _render_answer_content(answer, touched_fens)
 
     status.update(label="Done", state="complete", expanded=False)
     stop_placeholder.empty()
@@ -270,6 +295,9 @@ def _render_resource_recommendations() -> None:
             st.code(rec.pgn, language=None)
 
 
+DIAGRAM_SIZE_PX = 180
+
+
 def render_position_thumbnail(fen: str, label: str | None = None) -> None:
     """A small, plain board diagram for a position a tool call actually
     verified (see ask_with_status's touched_fens) -- no highlights or
@@ -279,8 +307,78 @@ def render_position_thumbnail(fen: str, label: str | None = None) -> None:
     """
     if label:
         st.caption(label)
-    svg = chess.svg.board(board=chess.Board(fen), size=180)
-    st.components.v1.html(svg, height=195)
+    svg = chess.svg.board(board=chess.Board(fen), size=DIAGRAM_SIZE_PX)
+    # chess.svg.board's own <svg> tag is exactly DIAGRAM_SIZE_PX square
+    # (its width/height attributes say so), but two things about the
+    # surrounding HTML document st.iframe builds around it add invisible
+    # height on top of that: the browser's own default ~8px <body> margin
+    # (killed by margin:0 below), and -- less obvious, and the part that
+    # was still overflowing with only the margin fix -- an <svg> is an
+    # inline element by default, so the browser reserves a few pixels of
+    # line-height beneath it for text descenders, the same "mystery gap"
+    # that shows up under a bare <img> in a div. line-height:0 on body
+    # collapses that reserved space to nothing, so the real content height
+    # matches DIAGRAM_SIZE_PX exactly instead of a few px more.
+    st.iframe(f"<body style='margin:0;line-height:0'>{svg}</body>", height=DIAGRAM_SIZE_PX)
+
+
+def _render_answer_content(text: str, image_fens: list[tuple[str, str | None]]) -> None:
+    """Renders `text` as markdown, replacing each [[diagram: <label>]]
+    marker (see SYSTEM_PROMPT's show_opening_line instruction) with the
+    matching labeled diagram, instead of every diagram dumped after the
+    full answer regardless of what it's actually discussing.
+
+    The marker is a literal token the model was explicitly told to place
+    at the point in its own answer where a diagram belongs, using the same
+    label it already passed to show_opening_line -- an earlier version of
+    this tried to *find* that label by searching the answer's free-form
+    prose for it, which almost never matched (nothing obliges the model to
+    repeat a tool argument verbatim in its synthesis), so diagrams still
+    landed at the end regardless. A marker the model is told to write is a
+    real contract; a string search against text it wasn't told to shape
+    around that string is not.
+
+    Every marker match is stripped from the visible text whether or not it
+    resolves to a diagram -- a label with nothing left to match (unknown
+    label, or a repeated label with no diagrams left) just disappears
+    rather than leaking raw "[[diagram: ...]]" syntax into the chat.
+    Diagrams with no matching marker at all (every unlabeled one --
+    evaluate_chess_position, find_similar_corpus_games, see
+    ask_with_status's docstring -- plus any labeled one the model forgot to
+    place a marker for) render after the full text, in original order.
+    Capped at MAX_INLINE_DIAGRAMS total.
+    """
+    by_label: dict[str, list[str]] = {}
+    for fen, label in image_fens:
+        if label:
+            by_label.setdefault(label.lower(), []).append(fen)
+
+    placed_fens: set[str] = set()
+    shown = 0
+    cursor = 0
+    for match in _DIAGRAM_MARKER_RE.finditer(text):
+        st.markdown(text[cursor : match.start()])
+        cursor = match.end()
+        if shown >= MAX_INLINE_DIAGRAMS:
+            continue
+        marker_label = match.group(1).strip()
+        candidates = by_label.get(marker_label.lower())
+        if not candidates:
+            continue
+        fen = candidates.pop(0)
+        render_position_thumbnail(fen, marker_label)
+        placed_fens.add(fen)
+        shown += 1
+
+    st.markdown(text[cursor:])
+
+    for fen, label in image_fens:
+        if shown >= MAX_INLINE_DIAGRAMS:
+            break
+        if fen in placed_fens:
+            continue
+        render_position_thumbnail(fen, label)
+        shown += 1
 
 
 def _to_model_text(content: str, fen_context: str | None) -> str:
@@ -349,8 +447,6 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
     sent_question = _to_model_text(question, fen_context)
     with st.chat_message("assistant", avatar=_CHAT_AVATARS["assistant"]):
         answer, touched_fens = ask_with_status(sent_question, history=history)
-        for fen, label in touched_fens[:4]:
-            render_position_thumbnail(fen, label)
     st.session_state.chat_history.append(("assistant", answer, None, touched_fens))
     st.session_state.resource_recommendations = None
 
@@ -378,11 +474,12 @@ def render_chat_tab() -> None:
     with chat_col:
         for role, content, fen, image_fens in st.session_state.chat_history:
             with st.chat_message(role, avatar=_CHAT_AVATARS[role]):
-                st.markdown(content)
+                if role == "assistant":
+                    _render_answer_content(content, image_fens)
+                else:
+                    st.markdown(content)
                 if fen is not None:
                     st.caption(f"Position: `{fen}`")
-                for image_fen, image_label in image_fens[:4]:
-                    render_position_thumbnail(image_fen, image_label)
 
         pending = st.session_state.pending_board_question
         if pending is not None:

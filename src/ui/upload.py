@@ -9,7 +9,7 @@ import tempfile
 import streamlit as st
 
 from src.ingestion.pgn_parser import parse_pgn
-from src.ui.chat import ask_with_status, render_position_thumbnail
+from src.ui.chat import ask_with_status
 
 
 def render_pgn_upload_tab() -> None:
@@ -52,6 +52,4 @@ def render_pgn_upload_tab() -> None:
             f"{', '.join(move_sans)}. Find similar games in the corpus and give me "
             "an illustrative comparison."
         )
-        _, touched_fens = ask_with_status(question)
-        for fen, label in touched_fens[:4]:
-            render_position_thumbnail(fen, label)
+        ask_with_status(question)

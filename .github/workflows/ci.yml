@@ -42,5 +42,8 @@ jobs:
       - name: Check formatting
         run: ruff format --check .
 
+      - name: Check requirements.txt matches pyproject.toml
+        run: python -m scripts.check_requirements_sync
+
       - name: Test
         run: pytest -v tests
