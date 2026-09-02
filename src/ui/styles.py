@@ -282,14 +282,27 @@ div[data-testid="stApp"] {
    it -- with no more tabs, this is the one screen, so capping its width
    directly (confirmed via a live DOM walk from the chat input up) is all
    that's needed, no :has() scoping required the way there was when a
-   second, full-width tab existed alongside this row. 1300px, split
-   roughly 3:2 between chat and board by the st.columns call itself, not
-   by CSS. No margin: auto -- the container already starts at the page's
-   own left padding, so capping width alone keeps that edge aligned
-   instead of centering the page into a column visually disconnected from
-   its own left edge. */
+   second, full-width tab existed alongside this row. 1450px, split
+   roughly 5:4 between chat and board by the st.columns call itself, not
+   by CSS -- board_col itself is further split for the board and its
+   side controls (see _render_board_panel), and needs real room for both:
+   at the old 1300px/3:2 split, the board's fixed 340px pixel size (see
+   board_component's own size param) didn't fit in its ~291px actual
+   sub-column, and chessboard.js has no way to shrink to match -- it
+   just overflowed into a horizontal scrollbar.
+
+   align-self: flex-start, not margin -- stMain (this element's parent)
+   is a column flex container with align-items: center of its own, which
+   was centering this capped-width block with equal empty space on both
+   sides regardless of any margin set here (confirmed live: both margins
+   computed to 0px, yet the block still sat 310px from the left edge on a
+   1920px-wide viewport). align-self overrides align-items for this one
+   flex item without touching stMain's rule for anything else it lays
+   out, and is what actually pins the page to its own left padding
+   instead of floating it in the middle of the window. */
 div[data-testid="stMainBlockContainer"] {
-    max-width: 1300px;
+    max-width: 1450px;
+    align-self: flex-start;
 }
 
 /* Streamlit's own built-in "Connection error" dialog (shown when the

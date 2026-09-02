@@ -35,7 +35,28 @@ _JS = "\n".join(
         (_DIR / "wiring.js").read_text(encoding="utf-8"),
     )
 )
-_CSS = (_DIR / "vendor" / "chessboard-1.0.0.min.css").read_text(encoding="utf-8")
+# A fix layered on top of the vendored CSS rather than edited into that
+# file directly, so re-vendoring a future chessboard.js release doesn't
+# silently drop it. chessboard.js's own coordinate labels (.notation-322f9)
+# sit on the corner of every edge square, position:absolute; a piece image
+# there is plain position:static -- confirmed live (piece computed
+# position: static, notation: absolute) that a positioned element always
+# paints above a static sibling regardless of z-index or DOM order, which
+# is why the label was covering the piece rather than the reverse.
+# Explicitly positioning the piece with a z-index gives it something to
+# actually win the stacking comparison against, rather than trying to push
+# the label behind it with a negative z-index, which would escape this
+# square's local stacking and interact unpredictably with the *board's*
+# own stacking context instead. The label's own font-size is also reduced
+# so it reads as a small corner mark instead of competing for the same
+# visual space as the piece art even where the two still meet.
+_PIECE_STACKING_FIX_CSS = """
+.notation-322f9 { font-size: 9px; }
+img[class*="piece-"] { position: relative; z-index: 1; }
+"""
+_CSS = (_DIR / "vendor" / "chessboard-1.0.0.min.css").read_text(encoding="utf-8") + (
+    _PIECE_STACKING_FIX_CSS
+)
 
 _chess_board_component = st.components.v2.component(
     "chess_rag_board",

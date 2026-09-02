@@ -1,6 +1,7 @@
-"""The main (and only) screen: chat transcript, the board panel alongside
-it, the game-upload section, and the resource-recommendation cards --
-everything that reads or writes st.session_state.chat_history/board.
+"""The main (and only) screen: chat transcript (PGN attachments included --
+see render_main_screen's chat_input), the board panel alongside it, and
+the resource-recommendation cards -- everything that reads or writes
+st.session_state.chat_history/board.
 """
 
 from __future__ import annotations
@@ -299,27 +300,20 @@ def _render_resource_recommendations() -> None:
             st.code(rec.pgn, language=None)
 
 
-def _render_game_upload_section() -> None:
-    """Upload a PGN of your own game, find similar corpus games (Layer 4).
+def _describe_uploaded_game(uploaded_file, user_text: str) -> str | None:
+    """Turn a PGN attached to the chat input (see render_main_screen's
+    accept_file=True) into the model-facing question text for Layer 4's
+    find_similar_corpus_games: a plain-language description of the game's
+    moves, combined with whatever the user typed alongside it, or a
+    sensible default question if they attached the file with no message
+    of its own.
 
-    Lives in the board column, above _render_resource_recommendations --
-    not its own tab (this app has none anymore) and not below the
-    recommendations, which only ever appear after a chat answer, by which
-    point the user is already scrolled past this. Uploading your own game
-    is meant to be an easy, early action on the page, not something
-    tucked behind a second click a visitor has to go looking for.
+    Returns None (after showing st.error itself, since this always runs
+    right before a rerun -- there's no later point a caller could still
+    surface the message) if the file has no parseable game.
     """
-    st.subheader("Analyze your own game")
-    st.caption(
-        "This comparison is **illustrative, not authoritative** -- it matches on "
-        "exact opening moves, not true positional similarity."
-    )
-    uploaded = st.file_uploader("Upload a PGN of your own game", type=["pgn"])
-    if uploaded is None:
-        return
-
     with tempfile.NamedTemporaryFile(suffix=".pgn", delete=False) as tmp:
-        tmp.write(uploaded.getvalue())
+        tmp.write(uploaded_file.getvalue())
         tmp_path = tmp.name
     try:
         # Only the first game is ever used below, so pull at most two from
@@ -332,24 +326,25 @@ def _render_game_upload_section() -> None:
 
     if not first_two_games:
         st.error("Couldn't find a game in that file.")
-        return
-
+        return None
     if len(first_two_games) > 1:
         st.info("This file has more than one game. Only the first is analyzed.")
 
-    game = first_two_games[0]
-    move_sans = [m.move_san for m in game.moves]
-    st.write(f"Parsed **{game.white or '?'} vs {game.black or '?'}** ({len(move_sans)} plies)")
-    preview = " ".join(move_sans[:20]) + (" ..." if len(move_sans) > 20 else "")
-    st.code(preview, language=None)
-
-    if st.button("Find similar games in the corpus", type="primary"):
-        question = (
-            "Here is a game I played, as a list of moves in order: "
-            f"{', '.join(move_sans)}. Find similar games in the corpus and give me "
-            "an illustrative comparison."
-        )
-        ask_with_status(question)
+    move_sans = [m.move_san for m in first_two_games[0].moves]
+    game_description = (
+        f"Here is a game I uploaded, as a list of moves in order: {', '.join(move_sans)}."
+    )
+    if user_text.strip():
+        return f"{game_description} {user_text}"
+    # No message of their own to go on, so this default has to name a
+    # length -- unlike a typed question, which already implies "answer
+    # this much and stop", a bare upload gives the model nothing to
+    # calibrate against, and the general efficiency nudge in SYSTEM_PROMPT
+    # (about tool-call count, not prose length) doesn't cover that.
+    return (
+        f"{game_description} Find similar games in the corpus and give me a brief, "
+        "illustrative comparison -- a few sentences, not a full report."
+    )
 
 
 DIAGRAM_SIZE_PX = 180
@@ -513,6 +508,9 @@ def render_main_screen() -> None:
         "Answers synthesize retrieved human commentary and engine output -- "
         "not the model's own independent chess judgment."
     )
+    st.caption(
+        "Attach a PGN of your own game to the chat below to find similar games in the corpus."
+    )
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     if "resource_recommendations" not in st.session_state:
@@ -526,7 +524,7 @@ def render_main_screen() -> None:
     if "board_generation" not in st.session_state:
         st.session_state.board_generation = 0
 
-    chat_col, board_col = st.columns([3, 2])
+    chat_col, board_col = st.columns([5, 4])
 
     with chat_col:
         for role, content, fen, image_fens in st.session_state.chat_history:
@@ -544,9 +542,18 @@ def render_main_screen() -> None:
             pending_question, pending_fen = pending
             _submit_question(pending_question, fen_context=pending_fen)
 
-        question = st.chat_input("Ask about openings, positions, or chess history...")
-        if question:
-            _submit_question(question)
+        submission = st.chat_input(
+            "Ask about openings, positions, or chess history...",
+            accept_file=True,
+            file_type=["pgn"],
+        )
+        if submission is not None:
+            if submission.files:
+                question = _describe_uploaded_game(submission.files[0], submission.text)
+                if question is not None:
+                    _submit_question(question)
+            elif submission.text:
+                _submit_question(submission.text)
 
     with board_col:
         _render_board_panel()
@@ -601,22 +608,52 @@ def _render_board_panel() -> None:
     """
     board: chess.Board = st.session_state.board
 
-    # size=340, down from the old standalone tab's 400 -- this board shares
-    # horizontal space with chat instead of having the full page to itself.
-    drop = chess_board(board.fen(), size=340, generation=st.session_state.board_generation)
-    if drop is not None:
-        _attempt_move(drop["from"], drop["to"])
-        st.rerun()
+    # Turn/FEN/Reset/Undo sit beside the board rather than stacked below
+    # it -- purely a height trade: board_col was running much taller than
+    # chat_col (usually near-empty until a conversation starts), and
+    # moving these compact, low-priority controls beside the board instead
+    # of under it closes most of that gap. The Evaluate button and the ask
+    # form stay full-width below both -- those are the primary actions,
+    # not incidental status/controls, and read better as one wide row each
+    # than squeezed into this side column too.
+    board_display_col, controls_col = st.columns([2, 1])
 
-    st.caption(f"Turn: {'White' if board.turn else 'Black'}")
-    # A caption with inline code, not st.code() -- a single short FEN line
-    # doesn't need its own full dark code panel (heavy padding, a copy
-    # button) sitting under the board; the same subtle inline-code style
-    # already used for the "Position: `{fen}`" captions elsewhere in this
-    # file reads as plain, quiet text instead of a block that sticks out.
-    st.caption(f"FEN: `{board.fen()}`")
-    if st.session_state.last_illegal_attempt is not None:
-        st.warning("That move isn't legal. Try again.")
+    with board_display_col:
+        # size=340, down from the old standalone tab's 400 -- this board
+        # shares horizontal space with chat instead of the full page.
+        drop = chess_board(board.fen(), size=340, generation=st.session_state.board_generation)
+        if drop is not None:
+            _attempt_move(drop["from"], drop["to"])
+            st.rerun()
+
+    with controls_col:
+        st.caption(f"Turn: {'White' if board.turn else 'Black'}")
+        # A caption with inline code, not st.code() -- a single short FEN
+        # line doesn't need its own full dark code panel (heavy padding, a
+        # copy button); the same subtle inline-code style already used for
+        # the "Position: `{fen}`" captions elsewhere in this file reads as
+        # plain, quiet text instead of a block that sticks out -- and
+        # wraps naturally across a few lines in this narrower column.
+        st.caption(f"FEN: `{board.fen()}`")
+        if st.session_state.last_illegal_attempt is not None:
+            st.warning("That move isn't legal. Try again.")
+
+        # Stacked, not side by side (st.columns(2) as this narrow column's
+        # own children would squeeze each button uncomfortably) -- no more
+        # expander either: that existed only to visually corral the old
+        # 8x8 click-grid the user found "ugly and disjointed", and with
+        # dragging directly on the board replacing that grid, these are
+        # core, expected board interactions, not something to hide behind
+        # a click.
+        if st.button("Reset board"):
+            st.session_state.board = chess.Board()
+            st.session_state.last_illegal_attempt = None
+            st.session_state.board_generation += 1
+            st.rerun()
+        if st.button("Undo last move", disabled=not board.move_stack):
+            board.pop()
+            st.session_state.board_generation += 1
+            st.rerun()
 
     if st.button("Evaluate this position with Stockfish", type="primary"):
         st.session_state.pending_board_question = (
@@ -626,33 +663,12 @@ def _render_board_panel() -> None:
         )
         st.rerun()
 
-    # No more expander: it existed only to visually corral the old 8x8
-    # click-grid the user found "ugly and disjointed" -- with dragging
-    # directly on the board replacing that grid, these controls are core,
-    # expected board interactions (matching lichess/chess.com, which show
-    # them directly beside the board), not something to hide behind a click.
-    reset_col, undo_col = st.columns(2)
-    with reset_col:
-        if st.button("Reset board"):
-            st.session_state.board = chess.Board()
-            st.session_state.last_illegal_attempt = None
-            st.session_state.board_generation += 1
-            st.rerun()
-    with undo_col:
-        if st.button("Undo last move", disabled=not board.move_stack):
-            board.pop()
-            st.session_state.board_generation += 1
-            st.rerun()
-
     with st.form("position_question_form", clear_on_submit=True):
         position_question = st.text_input("Ask about this position...")
         asked = st.form_submit_button("Ask")
     if asked and position_question:
         st.session_state.pending_board_question = (position_question, board.fen())
         st.rerun()
-
-    st.divider()
-    _render_game_upload_section()
 
     st.divider()
     _render_resource_recommendations()

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol
 
 import anthropic
@@ -18,7 +19,7 @@ import voyageai
 from anthropic import beta_tool
 
 from src.engine.engine_pool import EngineBusyError, EnginePool
-from src.engine.stockfish_eval import DEFAULT_DEPTH, evaluate_position
+from src.engine.stockfish_eval import DEFAULT_DEPTH, PositionEval, evaluate_position
 from src.ingestion.db_loader import get_connection_with_timeout
 from src.personalization.similarity import find_similar_games as _find_similar_games
 from src.rag.vector_search import search_chunks
@@ -64,10 +65,18 @@ deterministic statistics from the game database (Layer 1). Use these for \
 text (Layer 2). Use this for "why", "what's the plan", and conceptual/strategic \
 questions. This returns a synthesis of retrieved human text, not your own \
 independent judgment -- attribute ideas to the retrieved material.
-- evaluate_chess_position: Stockfish ground truth (Layer 3). You MUST call \
-this before making any claim about whether a move or position is good, \
-winning, a mistake, or a blunder. Never judge tactical soundness from your \
-own knowledge alone -- you are not a substitute for engine analysis.
+- evaluate_chess_position: Stockfish ground truth (Layer 3) for a single \
+position. You MUST call this (or compare_candidate_moves) before making \
+any claim about whether a move or position is good, winning, a mistake, \
+or a blunder. Never judge tactical soundness from your own knowledge \
+alone -- you are not a substitute for engine analysis.
+- compare_candidate_moves: Stockfish ground truth (Layer 3) for several \
+candidate moves from the same position at once -- use this instead of \
+calling evaluate_chess_position once per candidate whenever a question \
+asks you to compare, rank, or choose among multiple replies (e.g. "how \
+should Black meet this", "which of these responses is best"). It runs \
+the candidates concurrently, so one call here is much faster than several \
+separate evaluate_chess_position calls for the same comparison.
 - find_similar_corpus_games: opening-move-prefix matching against a user's \
 own game (Layer 4). This is an approximate, illustrative comparison based on \
 exact opening moves, not a rigorous positional match -- always tell the user \
@@ -116,6 +125,7 @@ TOOL_LABELS: dict[str, str] = {
     "get_common_moves_at_ply": "Layer 1 (structured search): checking common moves.",
     "search_annotations": "Layer 2 (semantic search): searching commentary and book text.",
     "evaluate_chess_position": "Layer 3 (Stockfish): evaluating the position.",
+    "compare_candidate_moves": "Layer 3 (Stockfish): comparing candidate moves.",
     "find_similar_corpus_games": "Layer 4 (similarity search): comparing against the corpus.",
     "show_opening_line": "Rendering a position diagram.",
 }
@@ -127,6 +137,23 @@ DB_RETRYABLE_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
 # inlined as a bare 2, so the retry budget is a single, intentional value
 # instead of a number a reader has to infer the meaning of.
 MAX_QUERY_ATTEMPTS = 2
+
+
+def _format_position_eval(result: PositionEval) -> str:
+    """Shared by evaluate_chess_position and compare_candidate_moves, so a
+    single-position eval and one candidate's line in a comparison read
+    identically.
+    """
+    if result.mate_in is not None:
+        return (
+            f"Mate in {result.mate_in}. Best move: {result.best_move_san}. "
+            f"Line: {' '.join(result.pv_san)}"
+        )
+    return (
+        f"Evaluation: {result.score_cp} centipawns (from the side to move's "
+        f"perspective). Best move: {result.best_move_san}. "
+        f"Line: {' '.join(result.pv_san)}"
+    )
 
 
 def build_tools(
@@ -282,16 +309,52 @@ def build_tools(
                 result = evaluate_position(engine, board, depth=depth)
         except EngineBusyError as exc:
             return str(exc)
-        if result.mate_in is not None:
-            return (
-                f"Mate in {result.mate_in}. Best move: {result.best_move_san}. "
-                f"Line: {' '.join(result.pv_san)}"
-            )
-        return (
-            f"Evaluation: {result.score_cp} centipawns (from the side to move's "
-            f"perspective). Best move: {result.best_move_san}. "
-            f"Line: {' '.join(result.pv_san)}"
-        )
+        return _format_position_eval(result)
+
+    @beta_tool
+    def compare_candidate_moves(fen: str, moves: list[str], depth: int = DEFAULT_DEPTH) -> str:
+        """Evaluate several candidate moves from the same starting position
+        at once -- for "which of these is best" questions, e.g. comparing
+        ways to meet an opening try. Prefer this over calling
+        evaluate_chess_position once per candidate whenever you're
+        comparing multiple moves from the same position: each candidate's
+        search runs on its own engine from the pool at the same time,
+        instead of one after another, so comparing several moves costs
+        close to the same wall-clock time as evaluating just one.
+
+        Args:
+            fen: The starting position in FEN notation, before any candidate move.
+            moves: Candidate moves in SAN notation to compare, e.g. ["g6", "Qe7", "Qf6"].
+            depth: Search depth per candidate; higher is more accurate but slower. Defaults to 18.
+        """
+        try:
+            base_board = chess.Board(fen)
+        except ValueError as exc:
+            return f"Invalid FEN: {exc}"
+
+        def _evaluate_one(move_san: str) -> str:
+            candidate_board = base_board.copy()
+            try:
+                candidate_board.push_san(move_san)
+            except ValueError:
+                return f"{move_san}: not legal in that position."
+            try:
+                with engine_pool.checkout() as engine:
+                    result = evaluate_position(engine, candidate_board, depth=depth)
+            except EngineBusyError as exc:
+                return f"{move_san}: {exc}"
+            return f"{move_san}: {_format_position_eval(result)}"
+
+        # Workers capped at engine_pool.size, not len(moves) -- checkout()
+        # never blocks (see EnginePool's own docstring), so more concurrent
+        # workers than engines would just mean the extras hit EngineBusyError
+        # immediately instead of politely waiting their turn. Capping worker
+        # count to the pool's actual capacity means a queued candidate waits
+        # for a free *thread* (whose previous checkout has already been
+        # returned to the pool) instead.
+        with ThreadPoolExecutor(max_workers=engine_pool.size) as executor:
+            lines = list(executor.map(_evaluate_one, moves))
+        return "\n".join(lines)
 
     @beta_tool
     def find_similar_corpus_games(moves: list[str], max_ply: int = 20, limit: int = 5) -> str:
@@ -350,6 +413,7 @@ def build_tools(
         get_common_moves_at_ply,
         search_annotations,
         evaluate_chess_position,
+        compare_candidate_moves,
         find_similar_corpus_games,
         show_opening_line,
     ]

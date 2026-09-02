@@ -1,3 +1,5 @@
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import chess
@@ -17,6 +19,7 @@ def _build_tools(on_position=None):
     conn = MagicMock()
     db_pool.getconn.return_value = conn
     engine_pool = MagicMock()
+    engine_pool.size = 2  # compare_candidate_moves needs a real int for ThreadPoolExecutor
     engine = MagicMock()
     engine_pool.checkout.return_value.__enter__.return_value = engine
     voyage_client = MagicMock()
@@ -230,6 +233,59 @@ def test_evaluate_chess_position_reports_busy_when_pool_exhausted():
     assert result == busy_message
 
 
+def test_compare_candidate_moves_evaluates_all_candidates_concurrently():
+    """The whole reason this tool exists over calling evaluate_chess_position
+    once per candidate is that the candidates run in parallel, not one
+    after another (see chess_agent.py's own reasoning: a "compare several
+    lines" question that used to mean N sequential engine searches plus N
+    full model round trips was observed taking several real minutes).
+    Verified directly here, not just trusted from reading the code, by
+    tracking how many evaluate_position calls are genuinely in flight at
+    the same time.
+    """
+    tools, _, _, _, _, _ = _build_tools()  # engine_pool.size == 2
+    lock = threading.Lock()
+    state = {"current": 0, "peak": 0}
+
+    def slow_eval(engine, board, depth=18):
+        with lock:
+            state["current"] += 1
+            state["peak"] = max(state["peak"], state["current"])
+        time.sleep(0.05)
+        with lock:
+            state["current"] -= 1
+        return PositionEval(
+            fen=board.fen(), score_cp=0, mate_in=None, best_move_san="e4", pv_san=["e4"]
+        )
+
+    with patch("src.agent.chess_agent.evaluate_position", side_effect=slow_eval):
+        result = tools["compare_candidate_moves"](chess.Board().fen(), ["e4", "d4", "c4"])
+
+    assert state["peak"] >= 2, "candidates ran one at a time, not concurrently"
+    assert "e4:" in result
+    assert "d4:" in result
+    assert "c4:" in result
+
+
+def test_compare_candidate_moves_reports_an_illegal_candidate_without_failing_the_rest():
+    tools, _, _, _, _, _ = _build_tools()
+    position_eval = PositionEval(
+        fen="startpos", score_cp=12, mate_in=None, best_move_san="Nf6", pv_san=["Nf6"]
+    )
+    with patch("src.agent.chess_agent.evaluate_position", return_value=position_eval):
+        result = tools["compare_candidate_moves"](chess.Board().fen(), ["e4", "e9"])
+
+    assert "e4: Evaluation: 12 centipawns" in result
+    assert "e9: not legal in that position." in result
+
+
+def test_compare_candidate_moves_rejects_invalid_starting_fen():
+    tools, _, _, _, _, _ = _build_tools()
+    result = tools["compare_candidate_moves"]("not a fen", ["e4"])
+
+    assert "Invalid FEN" in result
+
+
 def test_find_similar_corpus_games_formats_matches():
     tools, _, conn, _, _, _ = _build_tools()
     matches = [
@@ -404,7 +460,7 @@ def test_ask_returns_text_from_final_message_only():
     call_kwargs = client.beta.messages.tool_runner.call_args.kwargs
     assert call_kwargs["model"] == "claude-sonnet-5"
     assert call_kwargs["stream"] is True
-    assert len(call_kwargs["tools"]) == 7
+    assert len(call_kwargs["tools"]) == 8
     assert call_kwargs["messages"] == [{"role": "user", "content": "some question"}]
 
 
