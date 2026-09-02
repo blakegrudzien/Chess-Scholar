@@ -107,7 +107,12 @@ def render_tutorial_trigger() -> None:
     if "tutorial_launch_id" not in st.session_state:
         st.session_state.tutorial_launch_id = 0
 
-    if st.button("How this works", key="tutorial_trigger", type="tertiary"):
+    # secondary, not tertiary -- tertiary renders as bare text with no
+    # border (confirmed live), which reads as a stray label rather than a
+    # clickable control once it's sitting alone in the header with nothing
+    # else nearby to anchor it. A bordered button matches Reset board/Undo
+    # last move and every other secondary action already on the page.
+    if st.button("How this works", key="tutorial_trigger", type="secondary"):
         st.session_state.tutorial_launch_id += 1
 
     _tutorial_component(

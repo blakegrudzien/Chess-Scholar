@@ -58,11 +58,13 @@ MAX_PACED_WORDS_PER_TURN = 40
 # answer works against scannability.
 MAX_INLINE_DIAGRAMS = 4
 
-# Height of the scrollable message panel (see render_main_screen) -- roughly
-# matches board_col's own typical height (board + its side controls +
-# Evaluate button + the ask-position form), so neither column reads as
-# oddly taller than the other on a fresh page load with no messages yet.
-MESSAGE_PANEL_HEIGHT_PX = 660
+# Height of the scrollable message panel (see render_main_screen). Trimmed
+# down from 660 as part of fitting a fresh, question-less page inside a
+# laptop viewport with no vertical scroll (a 14" MacBook's default logical
+# resolution is the binding case) -- board_col's own natural height ends up
+# the real floor either way (confirmed live), so this doesn't run short of
+# board_col's typical height so much as stop needlessly exceeding it.
+MESSAGE_PANEL_HEIGHT_PX = 560
 
 # Streamlit's default chat avatars are a generic face/robot Material icon --
 # a visual cue that reads as "generic AI chatbot," working against the
@@ -610,10 +612,16 @@ def render_main_screen() -> None:
     # to click "How this works" -- CLAUDE.md requires this caveat stay
     # visible in the UI, not just documented, and the tour's steps are
     # about what each control does, not about the answers' reliability.
-    st.caption(
-        "Answers synthesize retrieved human commentary and engine output, "
-        "not the model's own independent chess judgment."
-    )
+    #
+    # Keyed wrapper so styles.py can size this one caption down without
+    # touching every other st.caption on the page -- present, but a quiet
+    # footnote under the header rather than a second headline competing
+    # with the title above it.
+    with st.container(key="reliability_note"):
+        st.caption(
+            "Answers synthesize retrieved human commentary and engine output, "
+            "not the model's own independent chess judgment."
+        )
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     if "resource_recommendations" not in st.session_state:
@@ -680,7 +688,14 @@ def render_main_screen() -> None:
                 with message_panel:
                     _submit_question(question)
 
-    with board_col:
+    with board_col, st.container(key="board_panel"):
+        # Keyed purely so styles.py can tighten the default ~16px gap
+        # Streamlit puts between every element in this column -- board_col
+        # was the binding constraint on the whole page's height (its own
+        # natural content ran taller than chat_col's), so this is a big
+        # part of fitting an unscrolled, question-less page inside a
+        # laptop viewport (see stMainBlockContainer's own padding comment
+        # in styles.py for the rest of that budget).
         _render_board_panel()
 
 
@@ -760,7 +775,16 @@ def _render_board_panel() -> None:
     # full-width below both -- those are the primary actions, not
     # incidental status/controls, and read better as one wide row each
     # than squeezed into this side column too.
-    board_display_col, controls_col = st.columns([3, 2])
+    #
+    # [5, 2], not [3, 2] -- chess_board()'s size=340 below is a floor, not
+    # a target: chessboard.js fills its container when there's more than
+    # 340px to give it, but never shrinks under that regardless of how
+    # little room board_display_col actually has. [3, 2] passed that floor
+    # at a 14" MacBook's own default width (confirmed live: a 28px real
+    # overflow into controls_col, not just a tight fit) despite looking
+    # fine at the wider viewports actually tested at the time -- [5, 2]
+    # keeps real margin above 340px at that narrower width too.
+    board_display_col, controls_col = st.columns([5, 2])
 
     with board_display_col:
         # Wrapped in a keyed container (not passed as chess_board()'s own

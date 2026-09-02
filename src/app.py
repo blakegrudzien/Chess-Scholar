@@ -30,8 +30,15 @@ apply_global_styles()
 
 
 def main() -> None:
-    st.title("Chess RAG Assistant")
-    render_tutorial_trigger()
+    # Title and the tour trigger share one row, not stacked -- reclaims a
+    # full line of vertical space toward fitting an unscrolled, fresh page
+    # inside a laptop viewport (see styles.py's stMainBlockContainer rule
+    # for the rest of that budget).
+    title_col, tutorial_col = st.columns([6, 1], vertical_alignment="bottom")
+    with title_col:
+        st.title("Chess RAG Assistant")
+    with tutorial_col:
+        render_tutorial_trigger()
     render_main_screen()
 
 

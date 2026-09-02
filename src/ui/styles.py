@@ -143,7 +143,7 @@ button[data-testid="stBaseButton-secondaryFormSubmit"] {
    plus the same inset depth language every other carved surface in the
    app has.
 
-   [height="660px"], not [height]:not([height="auto"]) -- that broader
+   [height="560px"], not [height]:not([height="auto"]) -- that broader
    selector was a real bug, not just imprecise: Streamlit sets height="100%"
    (not "auto") on plenty of ordinary nested stVerticalBlocks as part of
    its normal column layout, unrelated to this container's own explicit
@@ -151,7 +151,7 @@ button[data-testid="stBaseButton-secondaryFormSubmit"] {
    this same background onto the board's own column block too. Matching
    the literal pixel value ties this rule to MESSAGE_PANEL_HEIGHT_PX in
    chat.py; update both together if that constant ever changes. */
-div[data-testid="stVerticalBlock"][height="660px"] {
+div[data-testid="stVerticalBlock"][height="560px"] {
     background: #F1E8D4;
     box-shadow:
         inset 0 2px 3px rgba(43, 31, 23, 0.30),
@@ -331,7 +331,7 @@ div[data-testid="stApp"] {
    directly (confirmed via a live DOM walk from the chat input up) is all
    that's needed, no :has() scoping required the way there was when a
    second, full-width tab existed alongside this row. 1700px, split
-   roughly 5:4 between chat and board by the st.columns call itself, not
+   roughly 3:2 between chat and board by the st.columns call itself, not
    by CSS -- bumped from 1450px because chat_col's own message panel is
    now a fixed-height scrolling box (see render_main_screen), so a
    too-narrow chat_col means more of a given answer's text wraps onto
@@ -358,6 +358,50 @@ div[data-testid="stApp"] {
 div[data-testid="stMainBlockContainer"] {
     max-width: 1700px;
     align-self: flex-start;
+    /* Streamlit's own defaults here are 96px top / 160px bottom -- built
+       for a page meant to be scrolled, not this one, where the whole
+       point is fitting a fresh, question-less screen inside a laptop
+       viewport with no scroll at all (confirmed live: at a 14" MacBook's
+       default logical resolution, the unscrolled page needed ~1200px
+       against an ~980px-tall screen, before browser chrome even eats into
+       that). Trimmed hard, not just tightened -- this is by far the
+       single biggest reclaimable chunk on the page. */
+    padding-top: 36px;
+    padding-bottom: 12px;
+}
+
+/* The reliability caveat (render_main_screen, "Answers synthesize...") has
+   to stay on the page per CLAUDE.md, but as a quiet footnote, not a second
+   headline right under the title -- smaller than st.caption's own default
+   size and pulled in further on the muted-brown scale already used for
+   secondary text elsewhere in this file. Margin trimmed too: it sits
+   snug under the title row, part of shrinking the page's whole top
+   section, not just this one line. */
+.st-key-reliability_note {
+    margin-top: -8px;
+    margin-bottom: 4px;
+}
+.st-key-reliability_note [data-testid="stCaptionContainer"] {
+    font-size: 11px;
+    color: #8A7860;
+}
+
+/* board_col (render_main_screen's board_panel wrapper, see chat.py) is the
+   real floor on the whole page's height -- its own natural content ran
+   taller than chat_col's even after the message panel was shrunk, so this
+   column, not that panel, decides how tall the row ends up. Streamlit's
+   own ~16px gap between every element here (board, Evaluate, the ask
+   form, the divider, Find related resources) adds up across six items;
+   tightened but not eliminated -- these are still visually distinct
+   controls, not one continuous block. The divider specifically carries
+   much more of its own margin than a single ruled line needs (measured
+   live: a 49px-tall element for what renders as 1px of visible line) and
+   gets trimmed further on top of the shared gap reduction. */
+.st-key-board_panel {
+    gap: 8px;
+}
+.st-key-board_panel hr {
+    margin: 4px 0;
 }
 
 /* Streamlit's own built-in "Connection error" dialog (shown when the
