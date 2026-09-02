@@ -62,7 +62,7 @@ MAX_INLINE_DIAGRAMS = 4
 # matches board_col's own typical height (board + its side controls +
 # Evaluate button + the ask-position form), so neither column reads as
 # oddly taller than the other on a fresh page load with no messages yet.
-MESSAGE_PANEL_HEIGHT_PX = 600
+MESSAGE_PANEL_HEIGHT_PX = 660
 
 # Streamlit's default chat avatars are a generic face/robot Material icon --
 # a visual cue that reads as "generic AI chatbot," working against the
@@ -256,6 +256,14 @@ def _render_resource_recommendations() -> None:
     history -- keeps the UI focused on what is actually in view rather than
     accumulating a lookup button per message.
 
+    The button itself always renders, even on a fresh page with no
+    conversation yet -- disabled rather than absent, so it's a visible
+    preview of a feature ("try this once you've asked something") instead
+    of UI that pops into existence with no warning partway through a
+    session. This is also what makes it a viable tutorial_overlay target:
+    an element that only exists conditionally can't be reliably spotlighted
+    from a fresh page, where the tour is most likely to be opened.
+
     st.session_state.resource_recommendations is the sentinel for "already
     looked up this question": None means not yet requested (show the
     button), a list (possibly empty, meaning nothing was relevant) means it
@@ -263,13 +271,21 @@ def _render_resource_recommendations() -> None:
     _submit_question, so a fresh question always gets a fresh button.
     """
     history = st.session_state.chat_history
-    if len(history) < 2 or history[-1][0] != "assistant":
-        return
-    question = history[-2][1]
+    eligible = len(history) >= 2 and history[-1][0] == "assistant"
 
     if st.session_state.resource_recommendations is None:
-        if not st.button("Find related resources", key="find_resources", type="primary"):
+        clicked = st.button(
+            "Find related resources",
+            key="find_resources",
+            type="primary",
+            disabled=not eligible,
+        )
+        if not eligible:
+            st.caption("Ask something first, then look here for related studies and games.")
             return
+        if not clicked:
+            return
+        question = history[-2][1]
         # Doherty threshold: this call runs a multi-step tool-calling loop
         # and regularly takes 20+ seconds in practice, past the point where
         # a bare spinner keeps people's attention -- a status panel with a
@@ -557,13 +573,46 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
     st.session_state.resource_recommendations = None
 
 
+def _render_example_prompts() -> None:
+    """Shown only on an empty conversation (render_main_screen checks
+    chat_history before calling this) -- teaches the chat's actual range
+    by demonstration, one example per layer/feature, the way ChatGPT/
+    Claude.ai/Gemini all show suggested prompts on a fresh conversation,
+    rather than by upfront explanation (see the "How this works" spotlight
+    tour, app.py's render_tutorial_trigger, for that). Clicking one submits
+    it directly, the same as typing it and pressing enter would.
+    """
+    st.caption("Try asking:")
+    examples = [
+        # The flagship demo query from CLAUDE.md: Layer 1 stats + Layer 2
+        # strategic prose, synthesized together.
+        "How should White meet the Sicilian Defense?",
+        "Evaluate 1. e4 e5 2. Qh5 for White",  # Layer 3, engine grounding
+        "What's the plan behind an isolated queen pawn?",  # Layer 2, conceptual
+        # Trend synthesis (CLAUDE.md), a distinct supported feature none
+        # of the other three examples touch.
+        "How has the King's Indian Defense's popularity changed over time?",
+    ]
+    for i, example in enumerate(examples):
+        if st.button(example, key=f"example_prompt_{i}", width="stretch"):
+            _submit_question(example)
+
+
 def render_main_screen() -> None:
+    # The walkthrough content that used to live here (what the chat/board/
+    # find-resources/PGN-upload each do) is now covered by app.py's own
+    # render_tutorial_trigger() (src/ui/tutorial_overlay) spotlight tour --
+    # a second, redundant explanation of the same UI right below it was the
+    # user's own call to cut once both had been tried side by side.
+    #
+    # This one line survives on its own, not folded into the tour: a
+    # standing caption, not something that only appears if a viewer happens
+    # to click "How this works" -- CLAUDE.md requires this caveat stay
+    # visible in the UI, not just documented, and the tour's steps are
+    # about what each control does, not about the answers' reliability.
     st.caption(
-        "Answers synthesize retrieved human commentary and engine output -- "
+        "Answers synthesize retrieved human commentary and engine output, "
         "not the model's own independent chess judgment."
-    )
-    st.caption(
-        "Attach a PGN of your own game to the chat below to find similar games in the corpus."
     )
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
@@ -584,7 +633,7 @@ def render_main_screen() -> None:
     if "game_path_label" not in st.session_state:
         st.session_state.game_path_label = None
 
-    chat_col, board_col = st.columns([5, 4])
+    chat_col, board_col = st.columns([3, 2])
 
     with chat_col:
         # A fixed-height, internally scrolling panel, not chat_input's own
@@ -597,8 +646,10 @@ def render_main_screen() -> None:
         # Streamlit auto-enables it for a fixed-height container holding
         # st.chat_message elements, exactly this case, so a new message
         # scrolls itself into view without extra plumbing here.
-        message_panel = st.container(height=MESSAGE_PANEL_HEIGHT_PX, border=True)
+        message_panel = st.container(height=MESSAGE_PANEL_HEIGHT_PX, border=True, key="chat_panel")
         with message_panel:
+            if not st.session_state.chat_history:
+                _render_example_prompts()
             for role, content, fen, image_fens in st.session_state.chat_history:
                 with st.chat_message(role, avatar=_CHAT_AVATARS[role]):
                     if role == "assistant":
@@ -709,17 +760,25 @@ def _render_board_panel() -> None:
     # full-width below both -- those are the primary actions, not
     # incidental status/controls, and read better as one wide row each
     # than squeezed into this side column too.
-    board_display_col, controls_col = st.columns([2, 1])
+    board_display_col, controls_col = st.columns([3, 2])
 
     with board_display_col:
-        # size=340, down from the old standalone tab's 400 -- this board
-        # shares horizontal space with chat instead of the full page.
-        drop = chess_board(
-            current_board.fen(),
-            size=340,
-            generation=st.session_state.board_generation,
-            draggable=not replaying,
-        )
+        # Wrapped in a keyed container (not passed as chess_board()'s own
+        # `key=`) purely so the tutorial overlay has a stable
+        # `.st-key-tutorial_board_target` selector to spotlight -- giving
+        # chess_board() itself a key would make Streamlit treat it as one
+        # persistent instance and stop remounting it when `data` changes,
+        # which is exactly the mechanism board_generation relies on for
+        # illegal-move snapback and Undo (see chess_board()'s docstring).
+        with st.container(key="tutorial_board_target"):
+            # size=340, down from the old standalone tab's 400 -- this board
+            # shares horizontal space with chat instead of the full page.
+            drop = chess_board(
+                current_board.fen(),
+                size=340,
+                generation=st.session_state.board_generation,
+                draggable=not replaying,
+            )
         if drop is not None and not replaying:
             _attempt_move(drop["from"], drop["to"])
             st.rerun()
@@ -778,7 +837,7 @@ def _render_board_panel() -> None:
                 st.session_state.board_generation += 1
                 st.rerun()
 
-    if st.button("Evaluate this position with Stockfish", type="primary"):
+    if st.button("Evaluate this position with Stockfish", type="primary", key="evaluate_position"):
         st.session_state.pending_board_question = (
             "Evaluate this chess position and tell me the best move. "
             "Use the engine, don't just guess.",
@@ -786,7 +845,26 @@ def _render_board_panel() -> None:
         )
         st.rerun()
 
-    with st.form("position_question_form", clear_on_submit=True):
+    # Narrower than the Evaluate button above it, not full board_col width --
+    # a single short question doesn't need the whole column, and the
+    # trailing empty column reads as intentional breathing room rather than
+    # a layout accident since Evaluate (a full-width primary action) is
+    # directly above it for contrast.
+    #
+    # Wrapped in st.container(key="position_question_form"), same reason
+    # tutorial_board_target wraps the board: st.form's own key= lands on
+    # its internal FormSubmitter button (confirmed live -- it renders as
+    # st-key-FormSubmitter-<form_key>-<button_label>), never on the form's
+    # own element, so tutorial_overlay's ".st-key-position_question_form"
+    # selector could never have matched anything. The form itself keeps a
+    # separate, unrelated key (Streamlit forbids two elements sharing one
+    # key in the same run).
+    form_col, _ = st.columns([3, 1])
+    with (
+        form_col,
+        st.container(key="position_question_form"),
+        st.form("position_question_form_widget", clear_on_submit=True),
+    ):
         # placeholder (text inside the box), not the visible label above it
         # -- matches the main chat_input's own look, which shows its
         # prompt the same way. label_visibility="collapsed", not omitting

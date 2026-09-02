@@ -143,7 +143,7 @@ button[data-testid="stBaseButton-secondaryFormSubmit"] {
    plus the same inset depth language every other carved surface in the
    app has.
 
-   [height="600px"], not [height]:not([height="auto"]) -- that broader
+   [height="660px"], not [height]:not([height="auto"]) -- that broader
    selector was a real bug, not just imprecise: Streamlit sets height="100%"
    (not "auto") on plenty of ordinary nested stVerticalBlocks as part of
    its normal column layout, unrelated to this container's own explicit
@@ -151,7 +151,7 @@ button[data-testid="stBaseButton-secondaryFormSubmit"] {
    this same background onto the board's own column block too. Matching
    the literal pixel value ties this rule to MESSAGE_PANEL_HEIGHT_PX in
    chat.py; update both together if that constant ever changes. */
-div[data-testid="stVerticalBlock"][height="600px"] {
+div[data-testid="stVerticalBlock"][height="660px"] {
     background: #F1E8D4;
     box-shadow:
         inset 0 2px 3px rgba(43, 31, 23, 0.30),

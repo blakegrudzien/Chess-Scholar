@@ -288,3 +288,37 @@ st.session_state["_board_fen"] = st.session_state.board.fen()
     assert not at.exception
     assert at.session_state["_board_is_same_object"] is True
     assert at.session_state["_board_fen"] == OTHER_FEN
+
+
+def test_example_prompts_render_as_buttons():
+    at = AppTest.from_string("""
+from src.ui.chat import _render_example_prompts
+_render_example_prompts()
+""")
+    at.run()
+    assert not at.exception
+    labels = [b.label for b in at.button]
+    assert "How should White meet the Sicilian Defense?" in labels
+    assert len(labels) == 4  # one example per layer/feature
+
+
+def test_clicking_an_example_prompt_submits_it_like_typing_and_enter():
+    at = AppTest.from_string("""
+from unittest.mock import patch
+import streamlit as st
+from src.ui import chat
+
+st.session_state.chat_history = []
+with patch("src.ui.chat.ask_agent", return_value="An answer."):
+    chat._render_example_prompts()
+""")
+    at.run()
+    assert not at.exception
+    example_button = next(b for b in at.button if "Sicilian" in b.label)
+
+    example_button.click().run()
+
+    assert not at.exception
+    roles = [entry[0] for entry in at.session_state.chat_history]
+    assert roles == ["user", "assistant"]
+    assert at.session_state.chat_history[0][1] == "How should White meet the Sicilian Defense?"

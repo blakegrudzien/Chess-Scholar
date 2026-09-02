@@ -23,6 +23,7 @@ import streamlit as st  # noqa: E402
 
 from src.ui.chat import render_main_screen  # noqa: E402
 from src.ui.styles import apply_global_styles  # noqa: E402
+from src.ui.tutorial_overlay import render_tutorial_trigger  # noqa: E402
 
 st.set_page_config(page_title="Chess RAG Assistant", layout="wide")
 apply_global_styles()
@@ -30,6 +31,7 @@ apply_global_styles()
 
 def main() -> None:
     st.title("Chess RAG Assistant")
+    render_tutorial_trigger()
     render_main_screen()
 
 
