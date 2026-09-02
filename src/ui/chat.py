@@ -1,12 +1,15 @@
-"""The Chat tab: chat transcript, the board panel alongside it, and the
-resource-recommendation cards -- everything that reads or writes
-st.session_state.chat_history/board.
+"""The main (and only) screen: chat transcript, the board panel alongside
+it, the game-upload section, and the resource-recommendation cards --
+everything that reads or writes st.session_state.chat_history/board.
 """
 
 from __future__ import annotations
 
 import html
+import itertools
+import os
 import re
+import tempfile
 import time
 from collections.abc import Callable
 
@@ -15,6 +18,7 @@ import chess.svg
 import streamlit as st
 
 from src.agent.chess_agent import OnPosition, ask
+from src.ingestion.pgn_parser import parse_pgn
 from src.recommendation.pipeline import (
     ChessbaseGameRecommendation,
     LichessStudyRecommendation,
@@ -295,6 +299,59 @@ def _render_resource_recommendations() -> None:
             st.code(rec.pgn, language=None)
 
 
+def _render_game_upload_section() -> None:
+    """Upload a PGN of your own game, find similar corpus games (Layer 4).
+
+    Lives in the board column, above _render_resource_recommendations --
+    not its own tab (this app has none anymore) and not below the
+    recommendations, which only ever appear after a chat answer, by which
+    point the user is already scrolled past this. Uploading your own game
+    is meant to be an easy, early action on the page, not something
+    tucked behind a second click a visitor has to go looking for.
+    """
+    st.subheader("Analyze your own game")
+    st.caption(
+        "This comparison is **illustrative, not authoritative** -- it matches on "
+        "exact opening moves, not true positional similarity."
+    )
+    uploaded = st.file_uploader("Upload a PGN of your own game", type=["pgn"])
+    if uploaded is None:
+        return
+
+    with tempfile.NamedTemporaryFile(suffix=".pgn", delete=False) as tmp:
+        tmp.write(uploaded.getvalue())
+        tmp_path = tmp.name
+    try:
+        # Only the first game is ever used below, so pull at most two from
+        # the generator: the first to use, and a second only to learn
+        # whether there's more than one, without fully parsing an upload
+        # (untrusted input) that could contain a large number of games.
+        first_two_games = list(itertools.islice(parse_pgn(tmp_path, source="user_upload"), 2))
+    finally:
+        os.unlink(tmp_path)
+
+    if not first_two_games:
+        st.error("Couldn't find a game in that file.")
+        return
+
+    if len(first_two_games) > 1:
+        st.info("This file has more than one game. Only the first is analyzed.")
+
+    game = first_two_games[0]
+    move_sans = [m.move_san for m in game.moves]
+    st.write(f"Parsed **{game.white or '?'} vs {game.black or '?'}** ({len(move_sans)} plies)")
+    preview = " ".join(move_sans[:20]) + (" ..." if len(move_sans) > 20 else "")
+    st.code(preview, language=None)
+
+    if st.button("Find similar games in the corpus", type="primary"):
+        question = (
+            "Here is a game I played, as a list of moves in order: "
+            f"{', '.join(move_sans)}. Find similar games in the corpus and give me "
+            "an illustrative comparison."
+        )
+        ask_with_status(question)
+
+
 DIAGRAM_SIZE_PX = 180
 
 
@@ -422,7 +479,7 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
     position" box go through, so a follow-up question either way lands in
     the same transcript instead of two disconnected conversations.
 
-    Only ever called from inside chat_col (see render_chat_tab and its
+    Only ever called from inside chat_col (see render_main_screen and its
     "pending_board_question" handling below) -- never directly from a
     board-side button. ask_with_status renders live UI (a status panel, a
     streaming answer area) at whatever point in the layout it's called from,
@@ -451,7 +508,7 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
     st.session_state.resource_recommendations = None
 
 
-def render_chat_tab() -> None:
+def render_main_screen() -> None:
     st.caption(
         "Answers synthesize retrieved human commentary and engine output -- "
         "not the model's own independent chess judgment."
@@ -593,6 +650,9 @@ def _render_board_panel() -> None:
     if asked and position_question:
         st.session_state.pending_board_question = (position_question, board.fen())
         st.rerun()
+
+    st.divider()
+    _render_game_upload_section()
 
     st.divider()
     _render_resource_recommendations()

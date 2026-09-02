@@ -109,7 +109,8 @@ def iter_studies_by_sort(
 ) -> Iterator[ScrapedStudyCard]:
     """Yield studies from a lichess.org/study/all/{sort} listing, page by
     page, stopping when a page returns fewer than STUDIES_PER_PAGE cards
-    (the natural end of the listing) or when max_pages is reached,
+    (the natural end of the listing), when max_pages is reached, or when
+    Lichess responds 400 to a page past its own depth limit (see below) --
     whichever comes first.
 
     Accepts an external RequestPacer for the same reason LichessClient
@@ -128,6 +129,15 @@ def iter_studies_by_sort(
         while max_pages is None or page <= max_pages:
             pacer.wait()
             response = client.get(f"/study/all/{sort}", params={"page": page})
+            if response.status_code == 400:
+                # Observed in practice, requesting a large --popular-count:
+                # the "popular" listing has a hard server-side page depth
+                # limit and returns 400 Bad Request past it, rather than an
+                # empty 200 page the way every other sort/page naturally
+                # ends -- from a caller's perspective this *is* the end of
+                # the listing, not a real error worth propagating.
+                logger.info("Reached the end of the %r listing at page %d", sort, page)
+                return
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
             cards = soup.select("div.study.paginated")

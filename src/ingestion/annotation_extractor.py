@@ -91,10 +91,27 @@ def iter_plies_with_comments(
     this into chunks-table-shaped records) and extract_chapter_comment_text
     (joins it into one readable preview block) so the walk itself is
     written once.
+
+    Stops early (without raising) at the first move that isn't actually
+    legal in the position reached so far, instead of every subsequent
+    caller crashing on it -- observed in practice from a broader,
+    less-curated slice of scraped Lichess study PGN (python-chess's parser
+    is lenient about malformed movetext, so a mainline move can parse fine
+    while still not being legal in the resulting position). Checked before
+    calling board.san() rather than catching the AssertionError it raises
+    internally: an assert is not a contract to depend on (see
+    hash_utils.check_no_delimiter's own docstring on the same point) --
+    it's stripped entirely under python -O, so relying on catching it here
+    would silently stop working in that mode. The same "surface fewer
+    plies rather than crash the whole batch" tradeoff iter_study_chapters
+    already makes at the chapter level; this is the equivalent one ply
+    deeper, within a single chapter.
     """
     board = game.board()
     for ply, node in enumerate(game.mainline(), start=1):
         move = node.move
+        if move not in board.legal_moves:
+            return
         move_san = board.san(move)
         board.push(move)
         yield ply, move_san, strip_computer_glyphs(node.comment), node.nags

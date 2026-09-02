@@ -79,52 +79,69 @@ def _load_existing_records(output_path: Path) -> dict[str, dict]:
 
 
 def collect_candidates(sort_counts: dict[str, int], output_path: Path) -> None:
+    """Collect and persist study candidates.
+
+    The listing walk and the per-study content fetch both make many
+    sequential, rate-limited requests against a real third-party site --
+    minutes of work that's expensive to redo. Everything gathered into
+    `existing` is written out in a finally block, not only on a clean
+    exit, so an unexpected failure partway through (a transient network
+    error, a Lichess response this code doesn't yet know how to handle)
+    loses only the work after the last write, not the whole run -- this
+    is not hypothetical: an earlier version crashed on a listing sort's
+    hard page-depth limit (see iter_studies_by_sort's own handling of
+    that specific case) and discarded an entire completed run's worth of
+    newly-fetched studies because nothing had been persisted yet.
+    """
     existing = _load_existing_records(output_path)
     logger.info("Found %d existing candidates in %s", len(existing), output_path)
 
     pacer = RequestPacer()
-    candidates: list[tuple[ScrapedStudyCard, str]] = []
-    for sort, count in sort_counts.items():
-        if count <= 0:
-            continue
-        for card in _collect_cards(sort, count, pacer):
-            candidates.append((card, sort))
-
     written = 0
     skipped = 0
     already_known = 0
 
-    with LichessClient(pacer=pacer) as client:
-        for card, source_sort in candidates:
-            if card.study_id in existing:
-                already_known += 1
+    try:
+        candidates: list[tuple[ScrapedStudyCard, str]] = []
+        for sort, count in sort_counts.items():
+            if count <= 0:
                 continue
+            for card in _collect_cards(sort, count, pacer):
+                candidates.append((card, sort))
 
-            try:
-                pgn = client.fetch_study_pgn(card.study_id)
-            except httpx.HTTPError as exc:
-                logger.warning("Skipping study %s, failed to fetch content: %s", card.study_id, exc)
-                skipped += 1
-                continue
+        with LichessClient(pacer=pacer) as client:
+            for card, source_sort in candidates:
+                if card.study_id in existing:
+                    already_known += 1
+                    continue
 
-            existing[card.study_id] = {**asdict(card), "source_sort": source_sort, "pgn": pgn}
-            written += 1
-            if written % PROGRESS_LOG_INTERVAL == 0:
-                logger.info("Fetched content for %d new studies so far", written)
+                try:
+                    pgn = client.fetch_study_pgn(card.study_id)
+                except httpx.HTTPError as exc:
+                    logger.warning(
+                        "Skipping study %s, failed to fetch content: %s", card.study_id, exc
+                    )
+                    skipped += 1
+                    continue
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as out:
-        for record in existing.values():
-            out.write(json.dumps(record) + "\n")
+                existing[card.study_id] = {**asdict(card), "source_sort": source_sort, "pgn": pgn}
+                written += 1
+                if written % PROGRESS_LOG_INTERVAL == 0:
+                    logger.info("Fetched content for %d new studies so far", written)
+    finally:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as out:
+            for record in existing.values():
+                out.write(json.dumps(record) + "\n")
 
-    logger.info(
-        "Wrote %d total candidates to %s (%d newly added, %d already known, %d skipped)",
-        len(existing),
-        output_path,
-        written,
-        already_known,
-        skipped,
-    )
+        logger.info(
+            "Wrote %d total candidates to %s (%d newly added, %d already known, %d skipped)",
+            len(existing),
+            output_path,
+            written,
+            already_known,
+            skipped,
+        )
 
 
 def main() -> None:

@@ -276,19 +276,19 @@ div[data-testid="stApp"] {
             transparent 1px, transparent 41px);
 }
 
-/* layout="wide" is needed for the upload tab's file uploader and the
-   board panel's 8-column position-editor grid, but it also stretches the
-   chat/board row edge to edge on a wide window. Capping the panel that
-   contains the chat input (rather than assuming DOM order among the tab
-   panels, which didn't actually match :first-of-type in practice) keeps
-   the upload tab at full width while giving the chat+board row a fixed
-   total measure -- 1300px, split roughly 3:2 between chat and board by
-   the st.columns call itself, not by CSS. No margin: auto -- the panel
-   already starts at the same left edge as the page title and tab bar
-   above it (same parent padding), so capping width alone keeps that edge
-   aligned instead of centering the panel into a column visually
-   disconnected from the header above it. */
-div[data-testid="stTabPanel"]:has([data-testid="stChatInputTextArea"]) {
+/* layout="wide" is needed for the board panel's 8-column position-editor
+   grid, but it also stretches the whole page edge to edge on a wide
+   window. stMainBlockContainer wraps the page title and everything below
+   it -- with no more tabs, this is the one screen, so capping its width
+   directly (confirmed via a live DOM walk from the chat input up) is all
+   that's needed, no :has() scoping required the way there was when a
+   second, full-width tab existed alongside this row. 1300px, split
+   roughly 3:2 between chat and board by the st.columns call itself, not
+   by CSS. No margin: auto -- the container already starts at the page's
+   own left padding, so capping width alone keeps that edge aligned
+   instead of centering the page into a column visually disconnected from
+   its own left edge. */
+div[data-testid="stMainBlockContainer"] {
     max-width: 1300px;
 }
 

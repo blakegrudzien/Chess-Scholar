@@ -112,6 +112,31 @@ def test_iter_studies_by_sort_paginates_until_a_short_page():
     assert results[-1].study_id == "last"
 
 
+def test_iter_studies_by_sort_treats_a_400_response_as_the_end_of_the_listing():
+    """Real, reproduced failure: requesting a large --popular-count walked
+    past the "popular" listing's actual depth, and Lichess responded 400
+    Bad Request to that page instead of an empty 200 the way every other
+    sort/page naturally ends -- this used to propagate as an unhandled
+    HTTPStatusError and abort the whole collection run.
+    """
+    full_page = _page_html([_card_html(f"id{i}") for i in range(STUDIES_PER_PAGE)])
+    requested_pages = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = request.url.params.get("page")
+        requested_pages.append(page)
+        if page == "3":
+            return httpx.Response(400, text="Bad Request")
+        return httpx.Response(200, text=full_page)
+
+    with patch("src.recommendation.lichess_client.REQUEST_PACING_SECONDS", 0):
+        with _client_with_handler(handler) as http_client:
+            results = list(iter_studies_by_sort("popular", http_client=http_client))
+
+    assert requested_pages == ["1", "2", "3"]
+    assert len(results) == STUDIES_PER_PAGE * 2
+
+
 def test_iter_studies_by_sort_stops_at_max_pages():
     full_page = _page_html([_card_html(f"id{i}") for i in range(STUDIES_PER_PAGE)])
     requested_pages = []

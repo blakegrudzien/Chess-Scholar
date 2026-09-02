@@ -3,7 +3,11 @@ import io
 import chess.pgn
 import pytest
 
-from src.ingestion.annotation_extractor import extract_annotations, extract_chapter_comment_text
+from src.ingestion.annotation_extractor import (
+    extract_annotations,
+    extract_chapter_comment_text,
+    iter_plies_with_comments,
+)
 from src.ingestion.pgn_parser import parse_pgn
 
 SAMPLE_PGN = (
@@ -103,6 +107,25 @@ def test_glyph_mixed_with_prose_keeps_prose_only(tmp_path):
     move_chunk = chunks[1]
     assert "%cal" not in move_chunk.text
     assert move_chunk.text == "Bxb4!?: Accepting the gambit. Sharp play follows."
+
+
+def test_iter_plies_with_comments_stops_at_the_first_illegal_move():
+    """Real, reproduced crash: a broader slice of scraped Lichess study PGN
+    included a chapter whose mainline had a move that wasn't actually legal
+    in the position reached so far (python-chess's parser doesn't validate
+    this while parsing -- GameNode.add_variation doesn't either, confirmed
+    directly). board.san() on that move raised an AssertionError that took
+    down the whole build_study_index.py batch over one bad study. This
+    should degrade to "fewer plies for this one chapter", not crash.
+    """
+    game = chess.pgn.Game()
+    node = game.add_variation(chess.Move.from_uci("e2e4"))
+    node = node.add_variation(chess.Move.from_uci("e7e5"))
+    # White to move again immediately -- illegal, e2e4 was never undone.
+    node.add_variation(chess.Move.from_uci("e2e4"))
+
+    plies = list(iter_plies_with_comments(game))
+    assert [move_san for _, move_san, _, _ in plies] == ["e4", "e5"]
 
 
 def test_windows_1252_fallback_decoding(tmp_path):

@@ -2,6 +2,7 @@ import json
 from unittest.mock import patch
 
 import httpx
+import pytest
 
 from scripts.collect_study_candidates import collect_candidates
 from src.recommendation.lichess_scraper import ScrapedStudyCard
@@ -161,6 +162,36 @@ def test_collect_candidates_preserves_existing_records_across_runs(tmp_path):
     assert set(records) == {"old1", "h1"}
     assert records["old1"]["pgn"] == "OLD PGN"  # untouched, not re-fetched
     assert fetch_calls == ["h1"]  # only the new study triggered a content fetch
+
+
+def test_collect_candidates_persists_partial_progress_when_it_crashes(tmp_path):
+    """Real, reproduced failure: an earlier version only wrote output_path
+    once, at the very end -- an unexpected exception partway through the
+    run (a listing sort hitting a page past Lichess's depth limit; see
+    iter_studies_by_sort's own fix for that specific case) discarded an
+    entire run's worth of already-fetched, rate-limited content. Whatever
+    made it into `existing` before the crash must survive it.
+    """
+    cards = [_card("ok1"), _card("ok2"), _card("boom")]
+    output_path = tmp_path / "candidates.jsonl"
+
+    def fetch(study_id):
+        if study_id == "boom":
+            raise RuntimeError("something this code doesn't yet know how to handle")
+        return f"PGN for {study_id}"
+
+    with (
+        patch(
+            "scripts.collect_study_candidates.iter_studies_by_sort",
+            side_effect=_fake_listing({"popular": cards}),
+        ),
+        patch("scripts.collect_study_candidates.LichessClient.fetch_study_pgn", side_effect=fetch),
+        pytest.raises(RuntimeError),
+    ):
+        collect_candidates({"popular": 3}, output_path)
+
+    records = [json.loads(line) for line in output_path.read_text().splitlines()]
+    assert [r["study_id"] for r in records] == ["ok1", "ok2"]
 
 
 def test_collect_candidates_does_not_refetch_an_already_known_study_id(tmp_path):
