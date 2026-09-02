@@ -56,6 +56,12 @@ MAX_PACED_WORDS_PER_TURN = 40
 # answer works against scannability.
 MAX_INLINE_DIAGRAMS = 4
 
+# Height of the scrollable message panel (see render_main_screen) -- roughly
+# matches board_col's own typical height (board + its side controls +
+# Evaluate button + the ask-position form), so neither column reads as
+# oddly taller than the other on a fresh page load with no messages yet.
+MESSAGE_PANEL_HEIGHT_PX = 600
+
 # Streamlit's default chat avatars are a generic face/robot Material icon --
 # a visual cue that reads as "generic AI chatbot," working against the
 # deliberately non-modern, non-AI-flavored identity built for this app.
@@ -527,20 +533,32 @@ def render_main_screen() -> None:
     chat_col, board_col = st.columns([5, 4])
 
     with chat_col:
-        for role, content, fen, image_fens in st.session_state.chat_history:
-            with st.chat_message(role, avatar=_CHAT_AVATARS[role]):
-                if role == "assistant":
-                    _render_answer_content(content, image_fens)
-                else:
-                    st.markdown(content)
-                if fen is not None:
-                    st.caption(f"Position: `{fen}`")
+        # A fixed-height, internally scrolling panel, not chat_input's own
+        # "pin to the bottom of the page" trick -- that trick only works
+        # when chat_input sits at the top level of the app; nested in this
+        # column (alongside board_col), it just renders inline after the
+        # last message instead, so its position on the page drifted with
+        # the conversation's length -- sometimes level with the board,
+        # sometimes well below it. autoscroll left at its default (None):
+        # Streamlit auto-enables it for a fixed-height container holding
+        # st.chat_message elements, exactly this case, so a new message
+        # scrolls itself into view without extra plumbing here.
+        message_panel = st.container(height=MESSAGE_PANEL_HEIGHT_PX, border=True)
+        with message_panel:
+            for role, content, fen, image_fens in st.session_state.chat_history:
+                with st.chat_message(role, avatar=_CHAT_AVATARS[role]):
+                    if role == "assistant":
+                        _render_answer_content(content, image_fens)
+                    else:
+                        st.markdown(content)
+                    if fen is not None:
+                        st.caption(f"Position: `{fen}`")
 
-        pending = st.session_state.pending_board_question
-        if pending is not None:
-            st.session_state.pending_board_question = None
-            pending_question, pending_fen = pending
-            _submit_question(pending_question, fen_context=pending_fen)
+            pending = st.session_state.pending_board_question
+            if pending is not None:
+                st.session_state.pending_board_question = None
+                pending_question, pending_fen = pending
+                _submit_question(pending_question, fen_context=pending_fen)
 
         submission = st.chat_input(
             "Ask about openings, positions, or chess history...",
@@ -548,12 +566,14 @@ def render_main_screen() -> None:
             file_type=["pgn"],
         )
         if submission is not None:
+            question = None
             if submission.files:
                 question = _describe_uploaded_game(submission.files[0], submission.text)
-                if question is not None:
-                    _submit_question(question)
             elif submission.text:
-                _submit_question(submission.text)
+                question = submission.text
+            if question is not None:
+                with message_panel:
+                    _submit_question(question)
 
     with board_col:
         _render_board_panel()
@@ -664,7 +684,16 @@ def _render_board_panel() -> None:
         st.rerun()
 
     with st.form("position_question_form", clear_on_submit=True):
-        position_question = st.text_input("Ask about this position...")
+        # placeholder (text inside the box), not the visible label above it
+        # -- matches the main chat_input's own look, which shows its
+        # prompt the same way. label_visibility="collapsed", not omitting
+        # the label entirely: a real label is still required for
+        # screen-reader accessibility, just not shown visually.
+        position_question = st.text_input(
+            "Ask about this position...",
+            placeholder="Ask about this position...",
+            label_visibility="collapsed",
+        )
         asked = st.form_submit_button("Ask")
     if asked and position_question:
         st.session_state.pending_board_question = (position_question, board.fen())

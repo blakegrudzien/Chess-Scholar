@@ -131,6 +131,33 @@ button[data-testid="stBaseButton-secondaryFormSubmit"] {
     line-height: 1.55;
 }
 
+/* The scrollable message panel (render_main_screen's st.container(height=
+   MESSAGE_PANEL_HEIGHT_PX, border=True), "the chatbox") is the one layout
+   wrapper that gets its own distinct surface -- unlike the "Ask about
+   this position" form or other plain grouping containers, where the
+   individual block elements inside (the text input, the button) already
+   carry their own inset treatment and the wrapper is just spacing
+   between them, left showing the page's own background on purpose. The
+   chatbox holds the whole conversation, not just a couple of controls,
+   so it reads as its own sunken panel -- same card tone .rec-card uses,
+   plus the same inset depth language every other carved surface in the
+   app has.
+
+   [height="600px"], not [height]:not([height="auto"]) -- that broader
+   selector was a real bug, not just imprecise: Streamlit sets height="100%"
+   (not "auto") on plenty of ordinary nested stVerticalBlocks as part of
+   its normal column layout, unrelated to this container's own explicit
+   height param -- confirmed live from a real bug report, where it painted
+   this same background onto the board's own column block too. Matching
+   the literal pixel value ties this rule to MESSAGE_PANEL_HEIGHT_PX in
+   chat.py; update both together if that constant ever changes. */
+div[data-testid="stVerticalBlock"][height="600px"] {
+    background: #F1E8D4;
+    box-shadow:
+        inset 0 2px 3px rgba(43, 31, 23, 0.30),
+        inset 0 -1px 0 rgba(237, 225, 204, 0.35);
+}
+
 /* Chat bubbles: originally keyed on stChatMessageAvatarUser/Assistant, but
    that testid only exists for Streamlit's own built-in emoji/icon avatars
    (confirmed by reading the compiled frontend) -- once the avatar became a
@@ -192,6 +219,27 @@ div[data-testid="stChatMessage"]:has(
     box-shadow:
         inset 0 2px 3px rgba(43, 31, 23, 0.30),
         inset 0 -1px 0 rgba(237, 225, 204, 0.35);
+}
+
+/* The st.status "Thinking..." panel (shown live while a response
+   generates, and the similar "Looking for related resources..." one --
+   both st.status, which renders as an stExpander under the hood, the
+   only place this app uses one) blended into its own chat bubble's
+   background: same tan tone, no visual separation. The dark walnut
+   treatment used for code blocks was tried here first and didn't work --
+   too heavy/dark for a panel holding a full sentence of rationale text,
+   unlike a short code/FEN snippet. Same lighter card tone the message
+   panel and .rec-card use instead, still with the inset depth every
+   other carved surface in the app has, just not dark. */
+div[data-testid="stExpander"] {
+    background: #F1E8D4;
+    border-radius: 2px;
+    box-shadow:
+        inset 0 2px 3px rgba(43, 31, 23, 0.30),
+        inset 0 -1px 0 rgba(237, 225, 204, 0.35);
+}
+div[data-testid="stExpander"] [data-testid="stMarkdownContainer"] {
+    color: #2B1F17;
 }
 
 /* Code blocks (st.code(), language=None everywhere it's used -- FEN, PGN,
@@ -282,14 +330,21 @@ div[data-testid="stApp"] {
    it -- with no more tabs, this is the one screen, so capping its width
    directly (confirmed via a live DOM walk from the chat input up) is all
    that's needed, no :has() scoping required the way there was when a
-   second, full-width tab existed alongside this row. 1450px, split
+   second, full-width tab existed alongside this row. 1700px, split
    roughly 5:4 between chat and board by the st.columns call itself, not
-   by CSS -- board_col itself is further split for the board and its
-   side controls (see _render_board_panel), and needs real room for both:
-   at the old 1300px/3:2 split, the board's fixed 340px pixel size (see
-   board_component's own size param) didn't fit in its ~291px actual
-   sub-column, and chessboard.js has no way to shrink to match -- it
-   just overflowed into a horizontal scrollbar.
+   by CSS -- bumped from 1450px because chat_col's own message panel is
+   now a fixed-height scrolling box (see render_main_screen), so a
+   too-narrow chat_col means more of a given answer's text wraps onto
+   more lines, needing more scrolling within that fixed height to read
+   the same content. Widened the whole row rather than shifting the 5:4
+   ratio further toward chat, so board_col keeps the same safe margin
+   above the ~565px it actually needs (see below) instead of trading
+   away that margin for chat's gain. board_col itself is further split
+   for the board and its side controls (see _render_board_panel), and
+   needs real room for both: at the old 1300px/3:2 split, the board's
+   fixed 340px pixel size (see board_component's own size param) didn't
+   fit in its ~291px actual sub-column, and chessboard.js has no way to
+   shrink to match -- it just overflowed into a horizontal scrollbar.
 
    align-self: flex-start, not margin -- stMain (this element's parent)
    is a column flex container with align-items: center of its own, which
@@ -301,7 +356,7 @@ div[data-testid="stApp"] {
    out, and is what actually pins the page to its own left padding
    instead of floating it in the middle of the window. */
 div[data-testid="stMainBlockContainer"] {
-    max-width: 1450px;
+    max-width: 1700px;
     align-self: flex-start;
 }
 
