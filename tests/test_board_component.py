@@ -71,15 +71,21 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-@pytest.fixture(scope="module")
-def app_server() -> Iterator[str]:
+def _launch_streamlit_app(script_relpath: str) -> Iterator[str]:
+    """Launch `script_relpath` (relative to the repo root) as a real
+    Streamlit server on a free port, yielding its base URL once healthy.
+    Shared by app_server (the real app) and replay_app_server (a small
+    harness -- see _replay_harness_app.py -- that seeds
+    st.session_state.game_path directly, so the read-only/Prev/Next replay
+    behavior can be tested without a real recommend_resources() call).
+    """
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
     proc = subprocess.Popen(
         [
             "streamlit",
             "run",
-            "src/app.py",
+            script_relpath,
             "--server.headless",
             "true",
             "--server.address",
@@ -110,7 +116,7 @@ def app_server() -> Iterator[str]:
                 pass
             time.sleep(0.5)
         else:
-            raise RuntimeError("app server did not become healthy in time")
+            raise RuntimeError(f"{script_relpath} did not become healthy in time")
         yield base_url
     finally:
         try:
@@ -121,6 +127,16 @@ def app_server() -> Iterator[str]:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+@pytest.fixture(scope="module")
+def app_server() -> Iterator[str]:
+    yield from _launch_streamlit_app("src/app.py")
+
+
+@pytest.fixture(scope="module")
+def replay_app_server() -> Iterator[str]:
+    yield from _launch_streamlit_app("tests/_replay_harness_app.py")
 
 
 @pytest.fixture
@@ -134,6 +150,19 @@ def page(app_server: str) -> Iterator[Page]:
         # fresh, isolated board with no explicit reset needed between tests.
         pg = browser.new_page(viewport={"width": 1400, "height": 1000})
         pg.goto(app_server, wait_until="networkidle")
+        pg.wait_for_selector(".square-e2", timeout=15000)
+        yield pg
+        browser.close()
+
+
+@pytest.fixture
+def replay_page(replay_app_server: str) -> Iterator[Page]:
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        pg = browser.new_page(viewport={"width": 1400, "height": 1000})
+        pg.goto(replay_app_server, wait_until="networkidle")
         pg.wait_for_selector(".square-e2", timeout=15000)
         yield pg
         browser.close()
@@ -178,3 +207,38 @@ def test_dragging_an_illegal_move_leaves_the_fen_unchanged(page) -> None:
     _drag(page, "e2", "e5")
     time.sleep(1)  # let a wrongly-accepted move have time to show up, if any
     assert _board_fen(page) == starting_fen
+
+
+def test_replay_board_is_read_only(replay_page) -> None:
+    """draggable=False during replay must actually stop a drop from being
+    acted on, not just look inert -- _attempt_move mutates the (invisible,
+    behind-the-scenes) free-play board unconditionally, so if this ever
+    regressed, a drag during replay would corrupt that board silently
+    while the visibly-replayed piece just snaps back with no feedback at
+    all. Checking the FEN caption doesn't change is the only way to catch
+    that from outside; a passing drag with no visible effect could still
+    mean silent corruption happened underneath.
+    """
+    starting_fen = _board_fen(replay_page)
+    _drag(replay_page, "e2", "e4")
+    time.sleep(1)
+    assert _board_fen(replay_page) == starting_fen
+
+
+def test_replay_next_and_previous_step_through_the_game(replay_page) -> None:
+    starting_fen = _board_fen(replay_page)
+    assert replay_page.get_by_role("button", name="Previous").is_disabled()
+
+    replay_page.get_by_role("button", name="Next").click()
+    replay_page.wait_for_function(
+        f"{_FEN_CAPTION_JS}?.textContent.trim() !== {starting_fen!r}", timeout=5000
+    )
+    assert _board_fen(replay_page) != starting_fen
+    assert not replay_page.get_by_role("button", name="Previous").is_disabled()
+
+    replay_page.get_by_role("button", name="Previous").click()
+    replay_page.wait_for_function(
+        f"{_FEN_CAPTION_JS}?.textContent.trim() === {starting_fen!r}", timeout=5000
+    )
+    assert _board_fen(replay_page) == starting_fen
+    assert replay_page.get_by_role("button", name="Previous").is_disabled()

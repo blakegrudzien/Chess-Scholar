@@ -10,7 +10,7 @@
 // chessboard.js's own position(fen, useAnimation) diffing.
 export default function (component) {
   const { data, setTriggerValue, parentElement } = component;
-  const { fen, size } = data;
+  const { fen, size, draggable = true } = data;
 
   // chessboard.js's Chessboard() constructor calls .html(...) on its
   // container to build the board markup, which replaces the container's
@@ -33,7 +33,7 @@ export default function (component) {
 
   const board = window.Chessboard(boardContainer, {
     position: fen,
-    draggable: true,
+    draggable,
     pieceTheme: (piece) => CHESS_RAG_PIECE_IMAGES[piece],
     onDrop: (source, target) => {
       if (source === target) return;

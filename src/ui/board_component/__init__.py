@@ -79,12 +79,17 @@ _HEIGHT_BUFFER_PX = 10
 
 
 def chess_board(
-    fen: str, *, size: int = 300, generation: int = 0, key: str | None = None
+    fen: str,
+    *,
+    size: int = 300,
+    generation: int = 0,
+    draggable: bool = True,
+    key: str | None = None,
 ) -> dict[str, str] | None:
-    """Render a draggable board at `fen`. Returns {"from": sq, "to": sq} for
-    the drop that just happened, or None if nothing new was dropped since
-    the last script run -- "drop" is a trigger value (see wiring.js), so it
-    resets to None automatically after one rerun rather than replaying.
+    """Render a board at `fen`. Returns {"from": sq, "to": sq} for the drop
+    that just happened, or None if nothing new was dropped since the last
+    script run -- "drop" is a trigger value (see wiring.js), so it resets
+    to None automatically after one rerun rather than replaying.
 
     `generation` must change on every call where the board should visually
     re-sync, independent of whether `fen` itself changed. An illegal drop is
@@ -95,9 +100,17 @@ def chess_board(
     the previous call. Without a distinct generation value, this component
     has no signal to re-render, and the piece is left stuck at the illegal
     square instead of snapping back. See chat.py's board_generation counter.
+
+    draggable=False renders a read-only board (used while stepping through
+    a recommended game's move path in chat.py) -- threaded straight into
+    chessboard.js's own native `draggable` config option; confirmed in its
+    vendored source that onDrop never fires when this is False, so no
+    separate guard is needed on the JS side. The Python caller should still
+    check its own replay-vs-free-play state before acting on a drop too,
+    defense in depth rather than trusting a single layer.
     """
     result = _chess_board_component(
-        data={"fen": fen, "size": size, "generation": generation},
+        data={"fen": fen, "size": size, "generation": generation, "draggable": draggable},
         key=key,
         height=size + _HEIGHT_BUFFER_PX,
         on_drop_change=lambda: None,

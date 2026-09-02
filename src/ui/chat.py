@@ -7,6 +7,7 @@ st.session_state.chat_history/board.
 from __future__ import annotations
 
 import html
+import io
 import itertools
 import os
 import re
@@ -15,6 +16,7 @@ import time
 from collections.abc import Callable
 
 import chess
+import chess.pgn
 import chess.svg
 import streamlit as st
 
@@ -189,7 +191,16 @@ def ask_with_status(
         answer_area.empty()
 
     def on_position(fen: str, *, label: str | None = None, update_board: bool = True) -> None:
-        if update_board:
+        # and game_path is None: while replaying a recommended game,
+        # st.session_state.board is the free-play board sitting *behind*
+        # the replay, invisible but still live -- without this guard, an
+        # Evaluate/Ask-position call made against a replay ply (or any
+        # other tool call the model makes that turn, e.g.
+        # find_similar_corpus_games reporting an unrelated game's
+        # position) would silently overwrite it the moment on_position
+        # fires, corrupting it with no visible symptom until the user
+        # exits replay and finds their game changed underneath them.
+        if update_board and st.session_state.game_path is None:
             try:
                 new_board = chess.Board(fen)
             except ValueError:
@@ -282,7 +293,7 @@ def _render_resource_recommendations() -> None:
         st.caption("Nothing in the study library or corpus was a close enough match to recommend.")
         return
 
-    for rec in recommendations:
+    for idx, rec in enumerate(recommendations):
         if isinstance(rec, LichessStudyRecommendation):
             st.html(f"""
             <div class="rec-card">
@@ -304,6 +315,43 @@ def _render_resource_recommendations() -> None:
             """)
             st.caption("From the local corpus, moves only -- no commentary included.")
             st.code(rec.pgn, language=None)
+            # key qualified with idx, not just rec.game_id -- recommend_chessbase_game
+            # (pipeline.py) has no dedup, so the model could in principle recommend
+            # the same game twice in one turn, which would collide on game_id alone.
+            if st.button("Play through this game", key=f"play_{idx}_{rec.game_id}"):
+                game_path = _game_path_from_pgn(rec.pgn)
+                if game_path is None:
+                    st.error("Couldn't parse this game's moves.")
+                else:
+                    st.session_state.game_path = game_path
+                    st.session_state.game_path_index = 0
+                    st.session_state.game_path_label = f"{rec.white} vs {rec.black} ({rec.event})"
+                    st.session_state.board_generation += 1
+                    st.rerun()
+
+
+def _game_path_from_pgn(pgn: str) -> list[str] | None:
+    """Every ply's FEN in a PGN's mainline, starting position included at
+    index 0 -- the sequence _render_board_panel's Prev/Next steps through
+    for a "Play through this game" recommendation.
+
+    Returns None if the PGN doesn't parse. Defensive, not expected in
+    practice: structured_search.game_moves_as_pgn (the only source of
+    rec.pgn today) reconstructs PGN via python-chess's own serializer from
+    moves already validated with board.parse_san while building it, so it
+    should always be well-formed -- but nothing forces that guarantee to
+    hold for every future caller of this helper, and a malformed PGN
+    shouldn't crash the page.
+    """
+    game = chess.pgn.read_game(io.StringIO(pgn))
+    if game is None:
+        return None
+    board = chess.Board()
+    path = [board.fen()]
+    for move in game.mainline_moves():
+        board.push(move)
+        path.append(board.fen())
+    return path
 
 
 def _describe_uploaded_game(uploaded_file, user_text: str) -> str | None:
@@ -529,6 +577,12 @@ def render_main_screen() -> None:
         st.session_state.pending_board_question = None
     if "board_generation" not in st.session_state:
         st.session_state.board_generation = 0
+    if "game_path" not in st.session_state:
+        st.session_state.game_path = None
+    if "game_path_index" not in st.session_state:
+        st.session_state.game_path_index = 0
+    if "game_path_label" not in st.session_state:
+        st.session_state.game_path_label = None
 
     chat_col, board_col = st.columns([5, 4])
 
@@ -606,7 +660,11 @@ def _attempt_move(source: str, target: str) -> None:
 def _render_board_panel() -> None:
     """The board column: a draggable board reflecting the position under
     discussion, plus a quick-eval button, Reset/Undo, and a free-text
-    "ask about this position" form.
+    "ask about this position" form -- or, while replaying a recommended
+    game (st.session_state.game_path is not None; see
+    _render_resource_recommendations' "Play through this game" button), a
+    read-only board stepping through that game's moves instead, with
+    Evaluate/Ask-position operating on whatever ply is currently shown.
 
     Optimistic UI, no client-side legality check (see board_component's own
     docstring): chess_board() lets a drop land wherever it was dropped, and
@@ -614,6 +672,12 @@ def _render_board_panel() -> None:
     leaves st.session_state.board unchanged, so the next render's `data`
     (the still-unmoved FEN) reverts the piece visually via chessboard.js's
     own diffing -- no explicit snapback handling needed on either side.
+    Disabled entirely during replay (draggable=False) rather than left on
+    and silently ignored: _attempt_move mutates st.session_state.board
+    unconditionally, which during replay is the free-play board sitting
+    *behind* the visible replay position, not a copy -- a drag left enabled
+    there would corrupt it invisibly while the piece you actually see just
+    snaps back with no feedback at all.
 
     chess_board() only ever returns a given drop once -- it's a Streamlit
     "trigger" value, documented as transient (resets to None after one
@@ -626,60 +690,99 @@ def _render_board_panel() -> None:
     streaming UI) happens from inside chat_col on the next script pass, not
     in this narrow column. See _submit_question's docstring for why.
     """
-    board: chess.Board = st.session_state.board
+    replaying = st.session_state.game_path is not None
+    if replaying:
+        current_board = chess.Board(st.session_state.game_path[st.session_state.game_path_index])
+    else:
+        # The same object stored in session_state, not a copy -- Undo's
+        # current_board.pop() below still mutates st.session_state.board
+        # in place, exactly as it did before this function had a
+        # replay/free-play distinction to make.
+        current_board = st.session_state.board
 
-    # Turn/FEN/Reset/Undo sit beside the board rather than stacked below
-    # it -- purely a height trade: board_col was running much taller than
-    # chat_col (usually near-empty until a conversation starts), and
-    # moving these compact, low-priority controls beside the board instead
-    # of under it closes most of that gap. The Evaluate button and the ask
-    # form stay full-width below both -- those are the primary actions,
-    # not incidental status/controls, and read better as one wide row each
+    # Turn/FEN/Reset/Undo (or, during replay, the ply label and Prev/Next)
+    # sit beside the board rather than stacked below it -- purely a height
+    # trade: board_col was running much taller than chat_col (usually
+    # near-empty until a conversation starts), and moving these compact,
+    # low-priority controls beside the board instead of under it closes
+    # most of that gap. The Evaluate button and the ask form stay
+    # full-width below both -- those are the primary actions, not
+    # incidental status/controls, and read better as one wide row each
     # than squeezed into this side column too.
     board_display_col, controls_col = st.columns([2, 1])
 
     with board_display_col:
         # size=340, down from the old standalone tab's 400 -- this board
         # shares horizontal space with chat instead of the full page.
-        drop = chess_board(board.fen(), size=340, generation=st.session_state.board_generation)
-        if drop is not None:
+        drop = chess_board(
+            current_board.fen(),
+            size=340,
+            generation=st.session_state.board_generation,
+            draggable=not replaying,
+        )
+        if drop is not None and not replaying:
             _attempt_move(drop["from"], drop["to"])
             st.rerun()
 
     with controls_col:
-        st.caption(f"Turn: {'White' if board.turn else 'Black'}")
+        st.caption(f"Turn: {'White' if current_board.turn else 'Black'}")
         # A caption with inline code, not st.code() -- a single short FEN
         # line doesn't need its own full dark code panel (heavy padding, a
         # copy button); the same subtle inline-code style already used for
         # the "Position: `{fen}`" captions elsewhere in this file reads as
         # plain, quiet text instead of a block that sticks out -- and
         # wraps naturally across a few lines in this narrower column.
-        st.caption(f"FEN: `{board.fen()}`")
-        if st.session_state.last_illegal_attempt is not None:
-            st.warning("That move isn't legal. Try again.")
+        st.caption(f"FEN: `{current_board.fen()}`")
 
-        # Stacked, not side by side (st.columns(2) as this narrow column's
-        # own children would squeeze each button uncomfortably) -- no more
-        # expander either: that existed only to visually corral the old
-        # 8x8 click-grid the user found "ugly and disjointed", and with
-        # dragging directly on the board replacing that grid, these are
-        # core, expected board interactions, not something to hide behind
-        # a click.
-        if st.button("Reset board"):
-            st.session_state.board = chess.Board()
-            st.session_state.last_illegal_attempt = None
-            st.session_state.board_generation += 1
-            st.rerun()
-        if st.button("Undo last move", disabled=not board.move_stack):
-            board.pop()
-            st.session_state.board_generation += 1
-            st.rerun()
+        if replaying:
+            index = st.session_state.game_path_index
+            last_index = len(st.session_state.game_path) - 1
+            st.caption(f"{st.session_state.game_path_label} -- ply {index} of {last_index}")
+            # Stacked, not side by side, matching Reset/Undo's own layout
+            # below -- this column is too narrow for two buttons abreast.
+            # shortcut="Left"/"Right": a native st.button param (confirmed
+            # live, not assumed) that correctly stays out of the way while
+            # any text input has focus (arrow keys still move the text
+            # cursor normally there) but fires globally otherwise, so this
+            # needs no custom keyboard-handling component.
+            if st.button("Previous", shortcut="Left", disabled=index == 0):
+                st.session_state.game_path_index -= 1
+                st.session_state.board_generation += 1
+                st.rerun()
+            if st.button("Next", shortcut="Right", disabled=index == last_index):
+                st.session_state.game_path_index += 1
+                st.session_state.board_generation += 1
+                st.rerun()
+            if st.button("Exit replay"):
+                st.session_state.game_path = None
+                st.session_state.game_path_index = 0
+                st.session_state.game_path_label = None
+                st.session_state.board_generation += 1
+                st.rerun()
+        else:
+            if st.session_state.last_illegal_attempt is not None:
+                st.warning("That move isn't legal. Try again.")
+
+            # No more expander: it existed only to visually corral the old
+            # 8x8 click-grid the user found "ugly and disjointed", and with
+            # dragging directly on the board replacing that grid, these are
+            # core, expected board interactions, not something to hide
+            # behind a click.
+            if st.button("Reset board"):
+                st.session_state.board = chess.Board()
+                st.session_state.last_illegal_attempt = None
+                st.session_state.board_generation += 1
+                st.rerun()
+            if st.button("Undo last move", disabled=not current_board.move_stack):
+                current_board.pop()
+                st.session_state.board_generation += 1
+                st.rerun()
 
     if st.button("Evaluate this position with Stockfish", type="primary"):
         st.session_state.pending_board_question = (
             "Evaluate this chess position and tell me the best move. "
             "Use the engine, don't just guess.",
-            board.fen(),
+            current_board.fen(),
         )
         st.rerun()
 
@@ -696,7 +799,7 @@ def _render_board_panel() -> None:
         )
         asked = st.form_submit_button("Ask")
     if asked and position_question:
-        st.session_state.pending_board_question = (position_question, board.fen())
+        st.session_state.pending_board_question = (position_question, current_board.fen())
         st.rerun()
 
     st.divider()

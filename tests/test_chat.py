@@ -219,3 +219,72 @@ st.session_state["_touched"] = touched
     assert _node_types(at) == ["markdown", "iframe", "markdown"]
     combined = " ".join(_markdown_values(at))
     assert "[[diagram:" not in combined
+
+
+def test_game_path_from_pgn_returns_every_ply_fen():
+    pgn = "1. e4 e5 2. Nf3 Nc6 *"
+    at = AppTest.from_string(f"""
+from src.ui.chat import _game_path_from_pgn
+import streamlit as st
+st.session_state["_path"] = _game_path_from_pgn({pgn!r})
+""")
+    at.run()
+    assert not at.exception
+    path = at.session_state["_path"]
+    assert len(path) == 5  # starting position + 4 plies
+    assert path[0] == START_FEN
+
+    import chess
+
+    expected_final = chess.Board()
+    for san in ["e4", "e5", "Nf3", "Nc6"]:
+        expected_final.push_san(san)
+    assert path[-1] == expected_final.fen()
+
+
+def test_game_path_from_pgn_returns_none_for_unparseable_pgn():
+    at = AppTest.from_string("""
+from src.ui.chat import _game_path_from_pgn
+import streamlit as st
+st.session_state["_path"] = _game_path_from_pgn("")
+""")
+    at.run()
+    assert not at.exception
+    assert at.session_state["_path"] is None
+
+
+def test_ask_with_status_does_not_touch_the_free_play_board_during_replay():
+    """Real bug found during planning for game-replay: on_position used to
+    unconditionally overwrite st.session_state.board whenever a tool call
+    reported a position (update_board=True by default). During replay, that
+    board is the free-play board sitting *behind* the visible replay
+    position, not a copy -- evaluating a replay ply would silently corrupt
+    it with no visible symptom until the user exited replay. Must stay
+    completely untouched (same object, not just an equal-looking one) while
+    st.session_state.game_path is not None.
+    """
+    at = AppTest.from_string(f"""
+from unittest.mock import patch
+import chess
+import streamlit as st
+from src.ui import chat
+
+st.session_state.game_path = ["{START_FEN}", "{OTHER_FEN}"]
+st.session_state.game_path_index = 0
+original_board = chess.Board("{OTHER_FEN}")
+st.session_state.board = original_board
+
+def fake_ask_agent(question, on_step=None, on_chunk=None, on_position=None, history=None):
+    on_position("{START_FEN}", update_board=True)
+    return "Evaluation done."
+
+with patch("src.ui.chat.ask_agent", fake_ask_agent):
+    chat.ask_with_status("Evaluate this position")
+
+st.session_state["_board_is_same_object"] = st.session_state.board is original_board
+st.session_state["_board_fen"] = st.session_state.board.fen()
+""")
+    at.run()
+    assert not at.exception
+    assert at.session_state["_board_is_same_object"] is True
+    assert at.session_state["_board_fen"] == OTHER_FEN
