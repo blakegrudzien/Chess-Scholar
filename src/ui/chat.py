@@ -167,10 +167,23 @@ def ask_with_status(
     (the system prompt asks for a one-sentence rationale before every tool
     call), and the only way to tell them apart is whether a tool_use block
     shows up by the end of that turn -- so every turn's text streams into
-    answer_area first. If the turn turns out to have called a tool, that
-    text becomes the status line and answer_area is cleared for the next
-    turn; if not, it was the final answer, already fully displayed by the
-    time this returns.
+    preview_area first, live-typed the same way regardless of which one
+    this will turn out to be. preview_area is nested inside the status box
+    itself (see its own creation below), not a sibling of it -- a real,
+    reported bug: it used to be a plain top-level placeholder rendered
+    below the "Thinking..." box, so a turn's rationale visibly streamed in
+    unboxed first and then, once on_step ran, jumped into the box as a
+    status line -- the same text appearing to relocate itself the moment a
+    tool call was confirmed. Nesting the live preview inside the box from
+    the start means a tool-call turn's text was "inside the box" the whole
+    time; on_step just promotes it to a permanent status.write() line and
+    clears the preview for the next turn, both still inside the same box,
+    so nothing visibly jumps. If a turn turns out to be the final answer
+    instead, its completed text is copied out to final_area -- a separate,
+    unboxed placeholder declared outside the status box, matching how
+    every other historical message renders (see render_main_screen's own
+    chat_history loop) -- only once ask_agent returns and that's certain,
+    not live during typing.
 
     Each delta is re-split into word-sized pieces and revealed one at a
     time with a short pause between them (see STREAM_WORD_DELAY_SECONDS),
@@ -188,20 +201,24 @@ def ask_with_status(
     interactions as implicit yield points during a running script, so any
     click while this is in progress interrupts it at the next word reveal.
 
-    Declared after answer_area, not before it -- a real, reported bug:
+    Declared after the status box, not before it -- a real, reported bug:
     message_panel autoscrolls to follow new content as it streams in (see
     render_main_screen), and a placeholder's position in the DOM is fixed
     at the point it's created, not where its content later fills in. With
     the button declared first, it stayed pinned above the streamed text,
     so a long answer scrolled it out of view above the fold right when a
-    user most wants to reach it. Declaring it after answer_area puts it
-    right below the growing text instead, exactly where autoscroll already
-    keeps the view anchored.
+    user most wants to reach it. Declaring it after the status box puts it
+    right below the growing preview instead, exactly where autoscroll
+    already keeps the view anchored. final_area is declared last, after
+    the button -- it renders nothing until the very end (see below), so it
+    never affects the button's position while a turn is in progress.
     """
     status = st.status("Thinking...", expanded=True)
-    answer_area = st.empty()
+    with status:
+        preview_area = st.empty()
     stop_placeholder = st.empty()
     stop_placeholder.button("Stop generating", key="stop_generating")
+    final_area = st.empty()
 
     accumulated_text = ""
     words_this_turn = 0
@@ -216,7 +233,7 @@ def ask_with_status(
             # final render -- otherwise raw "[[diagram: ...]]" syntax
             # flashes on screen for the word or two it takes the closing
             # bracket to stream in.
-            answer_area.markdown(_DIAGRAM_MARKER_RE.sub("", accumulated_text))
+            preview_area.markdown(_DIAGRAM_MARKER_RE.sub("", accumulated_text))
             words_this_turn += 1
             if words_this_turn <= MAX_PACED_WORDS_PER_TURN:
                 time.sleep(STREAM_WORD_DELAY_SECONDS)
@@ -226,7 +243,7 @@ def ask_with_status(
         status.write(text)
         accumulated_text = ""
         words_this_turn = 0
-        answer_area.empty()
+        preview_area.empty()
 
     def on_position(fen: str, *, label: str | None = None, update_board: bool = True) -> None:
         # and game_path is None: while replaying a recommended game,
@@ -287,17 +304,20 @@ def ask_with_status(
             "Something interrupted this response before it finished -- "
             "try asking again, possibly with a narrower question."
         )
-        answer_area.markdown(answer)
+        final_area.markdown(answer)
     else:
-        # answer_area currently holds the plain streamed text (no
-        # diagrams) -- .empty() + re-entering .container() replaces that
-        # whole group of elements rather than appending after it, so the
-        # interleaved version takes its place instead of duplicating it.
-        answer_area.empty()
-        with answer_area.container():
+        # The completed answer goes to final_area, not preview_area --
+        # preview_area is nested inside the status box (see this function's
+        # own docstring), which is about to collapse to "Done" a few lines
+        # down, so leaving the final answer there would hide it inside a
+        # collapsed expander the user has to click open. final_area was
+        # declared as a sibling of the status box specifically so the
+        # answer stays visible once the box collapses.
+        with final_area.container():
             _render_answer_content(answer, touched_fens)
 
     status.update(label="Done", state="complete", expanded=False)
+    preview_area.empty()
     stop_placeholder.empty()
     return answer, touched_fens
 
