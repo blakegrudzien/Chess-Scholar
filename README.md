@@ -125,7 +125,7 @@ Master game annotations are exported from ChessBase 17 under the author's own li
 
 ## Testing
 
-235 tests, run against both Python 3.11 and 3.12 in CI. A handful require a local Postgres with pgvector and self-skip with a clear reason when one is not available; CI itself provisions both, so a passing build always exercises the real thing, including the database schema's own constraints, not just mocked versions of it.
+241 tests, run against both Python 3.11 and 3.12 in CI. A handful require a local Postgres with pgvector and self-skip with a clear reason when one is not available; CI itself provisions both, so a passing build always exercises the real thing, including the database schema's own constraints, not just mocked versions of it.
 
 The suite leans toward regression tests for real, previously-reproduced bugs (a dropped database connection mid-session, a PGN upload malformed enough to crash a naive parser, a concurrent evaluation race) rather than only happy-path coverage.
 
