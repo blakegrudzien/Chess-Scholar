@@ -373,17 +373,23 @@ div[data-testid="stMainBlockContainer"] {
 /* The reliability caveat (render_main_screen, "Answers synthesize...") has
    to stay on the page per CLAUDE.md, but as a quiet footnote, not a second
    headline right under the title -- smaller than st.caption's own default
-   size and pulled in further on the muted-brown scale already used for
-   secondary text elsewhere in this file. Margin trimmed too: it sits
-   snug under the title row, part of shrinking the page's whole top
-   section, not just this one line. */
+   size. Margin trimmed too: it sits snug under the title row, part of
+   shrinking the page's whole top section, not just this one line.
+
+   #6E5C46, not the #8A7860 this was first shipped at: that lighter shade
+   measured 3.49:1 against the page background, below WCAG AA's 4.5:1 floor
+   for text this small -- "quieter" was pushed too far into "harder to
+   read," not just "less prominent." #6E5C46 computes to 5.25:1, real
+   margin above the floor rather than sitting right on it, while still
+   reading as a muted footnote next to the full-strength body text
+   elsewhere on the page. */
 .st-key-reliability_note {
     margin-top: -8px;
     margin-bottom: 4px;
 }
 .st-key-reliability_note [data-testid="stCaptionContainer"] {
     font-size: 11px;
-    color: #8A7860;
+    color: #6E5C46;
 }
 
 /* board_col (render_main_screen's board_panel wrapper, see chat.py) is the
@@ -401,7 +407,30 @@ div[data-testid="stMainBlockContainer"] {
     gap: 8px;
 }
 .st-key-board_panel hr {
-    margin: 4px 0;
+    /* 4px on both sides measured out to a near-zero gap in practice --
+       "Find related resources" sat close enough to overlap the line
+       itself. More room below than above: this line's real job is
+       separating the board/eval/ask-position controls above it from
+       "Find related resources" below, so that side needs the clearer
+       break. */
+    margin: 4px 0 16px;
+}
+
+/* The "Ask about this position" form (position_question_form) is the one
+   place left with a visible rectangular border drawn around the page's
+   own wood-grain background -- Streamlit's default stForm styling. That
+   combination reads as an unfinished card (a frame around a fill that
+   doesn't match it), not as intentional spacing, and it sits directly
+   between two un-boxed controls (Evaluate above, Find related resources
+   below) that already read fine showing the page background because
+   neither one draws a border around itself. Dropping the border makes
+   this consistent with both neighbors instead of being the one bordered
+   wrapper among plain ones -- the input and button inside still carry
+   their own distinct styling regardless, so legibility doesn't depend on
+   the outer box at all. */
+div[data-testid="stForm"] {
+    border: none;
+    padding: 0;
 }
 
 /* Streamlit's own built-in "Connection error" dialog (shown when the

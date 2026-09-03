@@ -54,6 +54,20 @@ STREAM_WORD_DELAY_SECONDS = 0.02
 # the model to place inline in its own answer -- see _render_answer_content.
 _DIAGRAM_MARKER_RE = re.compile(r"\[\[diagram:\s*(.*?)\s*\]\]")
 
+# Shared help= text for every raw FEN/ply caption in this file (the chat
+# transcript's "Position: ..." captions, and the board panel's own "FEN: "/
+# "-- ply N of M" captions) -- these are real chess notation terms with no
+# obvious meaning to a reader who doesn't already play, and st.caption's
+# help= renders a small hover tooltip for exactly this, rather than
+# spelling either term out inline every time and cluttering what's meant
+# to be a compact, glanceable caption.
+_FEN_HELP = (
+    "FEN (Forsyth-Edwards Notation): a compact text format that fully "
+    "encodes a chess position -- where every piece is, whose turn it is, "
+    "and a few other rules-relevant details."
+)
+_PLY_HELP = "A ply is one player's move -- White's 1st move is ply 1, Black's reply is ply 2, etc."
+
 # Caps the paced reveal to the first N words of any single turn's text --
 # without this, a long final answer (a real one ran 900+ words this
 # session) pays STREAM_WORD_DELAY_SECONDS on every single word with no
@@ -303,10 +317,16 @@ def _render_resource_recommendations() -> None:
     eligible = len(history) >= 2 and history[-1][0] == "assistant"
 
     if st.session_state.resource_recommendations is None:
+        # secondary, not primary -- "Evaluate this position with Stockfish"
+        # is the page's one primary action; two competing primary-styled
+        # buttons dilute the visual hierarchy that color is supposed to
+        # establish (Refactoring UI's "distinguish an interface's actions
+        # by importance" principle -- one dominant action per view, not
+        # several equally loud ones).
         clicked = st.button(
             "Find related resources",
             key="find_resources",
-            type="primary",
+            type="secondary",
             disabled=not eligible,
         )
         if not eligible:
@@ -626,7 +646,7 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
     with st.chat_message("user", avatar=_CHAT_AVATARS["user"]):
         st.markdown(question)
         if fen_context is not None:
-            st.caption(f"Position: `{fen_context}`")
+            st.caption(f"Position: `{fen_context}`", help=_FEN_HELP)
     sent_question = _to_model_text(question, fen_context)
     with st.chat_message("assistant", avatar=_CHAT_AVATARS["assistant"]):
         answer, touched_fens = ask_with_status(sent_question, history=history)
@@ -724,7 +744,7 @@ def render_main_screen() -> None:
                     else:
                         st.markdown(content)
                     if fen is not None:
-                        st.caption(f"Position: `{fen}`")
+                        st.caption(f"Position: `{fen}`", help=_FEN_HELP)
 
             pending = st.session_state.pending_board_question
             if pending is not None:
@@ -874,12 +894,15 @@ def _render_board_panel() -> None:
         # the "Position: `{fen}`" captions elsewhere in this file reads as
         # plain, quiet text instead of a block that sticks out -- and
         # wraps naturally across a few lines in this narrower column.
-        st.caption(f"FEN: `{current_board.fen()}`")
+        st.caption(f"FEN: `{current_board.fen()}`", help=_FEN_HELP)
 
         if replaying:
             index = st.session_state.game_path_index
             last_index = len(st.session_state.game_path) - 1
-            st.caption(f"{st.session_state.game_path_label} -- ply {index} of {last_index}")
+            st.caption(
+                f"{st.session_state.game_path_label} -- ply {index} of {last_index}",
+                help=_PLY_HELP,
+            )
             # Stacked, not side by side, matching Reset/Undo's own layout
             # below -- this column is too narrow for two buttons abreast.
             # shortcut="Left"/"Right": a native st.button param (confirmed
