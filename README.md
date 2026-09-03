@@ -1,4 +1,4 @@
-# Chess RAG Assistant
+# Chess Scholar
 
 A chess research assistant that routes every question across four independent backends: SQL statistics, semantic search over annotated commentary, a real chess engine, and structural game similarity, through the LLM's own native tool calling rather than a hand-rolled classifier or a RAG framework.
 
@@ -8,7 +8,7 @@ A chess research assistant that routes every question across four independent ba
 
 **Live demo:** [chess-rag-blake.streamlit.app](https://chess-rag-blake.streamlit.app/)
 
-![Chess RAG Assistant answering a strategic opening question by combining corpus statistics and annotation text](docs/screenshot.png)
+![Chess Scholar answering a strategic opening question by combining corpus statistics and annotation text](docs/screenshot.png)
 
 ## What this is
 

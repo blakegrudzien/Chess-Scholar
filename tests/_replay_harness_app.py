@@ -24,7 +24,7 @@ import streamlit as st  # noqa: E402
 from src.ui.chat import render_main_screen  # noqa: E402
 from src.ui.styles import apply_global_styles  # noqa: E402
 
-st.set_page_config(page_title="Chess RAG Assistant", layout="wide")
+st.set_page_config(page_title="Chess Scholar", layout="wide")
 apply_global_styles()
 
 if "game_path" not in st.session_state:
@@ -37,5 +37,5 @@ if "game_path" not in st.session_state:
     st.session_state.game_path_index = 0
     st.session_state.game_path_label = "Test Game"
 
-st.title("Chess RAG Assistant")
+st.title("Chess Scholar")
 render_main_screen()

@@ -40,7 +40,7 @@ from src.ui.tutorial_overlay import render_tutorial_trigger  # noqa: E402
 # logs visible at all on the deployed demo, not just a local run.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-st.set_page_config(page_title="Chess RAG Assistant", layout="wide")
+st.set_page_config(page_title="Chess Scholar", layout="wide")
 apply_global_styles()
 
 
@@ -51,7 +51,7 @@ def main() -> None:
     # for the rest of that budget).
     title_col, tutorial_col = st.columns([6, 1], vertical_alignment="bottom")
     with title_col:
-        st.title("Chess RAG Assistant")
+        st.title("Chess Scholar")
     with tutorial_col:
         render_tutorial_trigger()
     render_main_screen()
