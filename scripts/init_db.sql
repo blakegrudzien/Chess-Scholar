@@ -63,6 +63,19 @@ CREATE TABLE IF NOT EXISTS lichess_study_cache (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Every real question asked in the deployed app, logged for later eval work
+-- (see src/ui/conversation_log.py) -- without this, a real conversation is
+-- gone the moment the browser tab closes, since st.session_state.
+-- chat_history is in-memory per session only. fen_context is nullable: most
+-- questions have none (see chat.py's own fen_context param).
+CREATE TABLE IF NOT EXISTS conversation_log (
+    id SERIAL PRIMARY KEY,
+    asked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    question TEXT NOT NULL,
+    fen_context TEXT,
+    answer TEXT NOT NULL
+);
+
 -- Indexes for Layer 1 structured search
 CREATE INDEX IF NOT EXISTS idx_games_eco ON games(eco_code);
 CREATE INDEX IF NOT EXISTS idx_games_year ON games(year);

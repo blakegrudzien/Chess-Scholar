@@ -339,7 +339,16 @@ import streamlit as st
 from src.ui import chat
 
 st.session_state.chat_history = []
-with patch("src.ui.chat.ask_agent", return_value="An answer."):
+with (
+    patch("src.ui.chat.ask_agent", return_value="An answer."),
+    # Isolated from real DB access deliberately -- _submit_question logs
+    # every real conversation to conversation_log for later eval review
+    # (see conversation_log.py), and this test's DATABASE_URL locally
+    # points at the same real database that data is meant for. Without
+    # this, running the suite locally would silently write a synthetic
+    # test row into real eval data every time.
+    patch("src.ui.chat.log_conversation_best_effort"),
+):
     chat._render_example_prompts()
 """)
     at.run()
@@ -439,3 +448,35 @@ st.session_state["_result"] = _describe_uploaded_game(_FakeUpload(pgn), "")
     assert not at.exception
     assert at.session_state["_result"] is None
     assert any("couldn't find a game" in e.value.lower() for e in at.error)
+
+
+def test_submit_question_logs_the_real_conversation_for_later_eval_review():
+    """_submit_question is the one path every question submission goes
+    through (main chat input, example prompts, and the board-side ask
+    form, via pending_board_question) -- confirms it actually calls
+    log_conversation_best_effort with the real question/fen/answer, not
+    just that logging doesn't crash anything.
+    """
+    at = AppTest.from_string("""
+from unittest.mock import MagicMock, patch
+import streamlit as st
+from src.ui import chat
+
+st.session_state.chat_history = []
+mock_log = MagicMock()
+with (
+    patch("src.ui.chat.ask_agent", return_value="Play 3.d4."),
+    patch("src.ui.chat.log_conversation_best_effort", mock_log),
+):
+    chat._submit_question(
+        "How should White meet the Sicilian?", fen_context="8/8/8/8/8/8/8/4K2k w - - 0 1"
+    )
+
+st.session_state["_call_args"] = mock_log.call_args
+""")
+    at.run()
+    assert not at.exception
+    call = at.session_state["_call_args"]
+    assert call.args[1] == "How should White meet the Sicilian?"
+    assert call.args[2] == "8/8/8/8/8/8/8/4K2k w - - 0 1"
+    assert call.args[3] == "Play 3.d4."

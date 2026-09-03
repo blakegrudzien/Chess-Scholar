@@ -30,6 +30,7 @@ from src.recommendation.pipeline import (
     recommend_resources,
 )
 from src.ui.board_component import chess_board
+from src.ui.conversation_log import log_conversation_best_effort
 from src.ui.resources import (
     get_anthropic_client,
     get_db_pool,
@@ -683,6 +684,10 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
         answer, touched_fens = ask_with_status(sent_question, history=history)
     st.session_state.chat_history.append(("assistant", answer, None, touched_fens))
     st.session_state.resource_recommendations = None
+
+    # See conversation_log.log_conversation_best_effort's own docstring:
+    # it guarantees on its own that a logging failure can't reach here.
+    log_conversation_best_effort(get_db_pool(), question, fen_context, answer)
 
 
 def _render_example_prompts() -> None:
