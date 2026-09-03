@@ -332,24 +332,30 @@ _render_example_prompts()
     assert len(labels) == 4  # one example per layer/feature
 
 
-def test_clicking_an_example_prompt_submits_it_like_typing_and_enter():
+def test_clicking_an_example_prompt_stashes_it_as_a_pending_question():
+    """Regression test for a real, reproduced bug: _render_example_prompts
+    used to call _submit_question directly from inside its button's if-
+    block. That block runs from render_main_screen's `if not st.session_
+    state.chat_history:` branch, *before* that same script run's `for ...
+    in st.session_state.chat_history:` loop below it -- _submit_question
+    mutates and renders the new question/answer pair on the spot, then
+    that loop renders the same, now-nonempty chat_history all over again
+    in the same run, doubling every message. Stashing into pending_
+    question and rerunning instead (the same pattern _render_board_panel's
+    own triggers already use, see that function's docstring) means a
+    fresh script run makes the correct decision: chat_history is
+    non-empty from the start, so _render_example_prompts is skipped
+    entirely and the pending-question handling in render_main_screen
+    renders the new pair exactly once. This test covers the stash; the
+    single-render guarantee itself is render_main_screen's own pending-
+    question handling, already exercised for the board-triggered case.
+    """
     at = AppTest.from_string("""
-from unittest.mock import patch
 import streamlit as st
-from src.ui import chat
+from src.ui.chat import _render_example_prompts
 
 st.session_state.chat_history = []
-with (
-    patch("src.ui.chat.ask_agent", return_value="An answer."),
-    # Isolated from real DB access deliberately -- _submit_question logs
-    # every real conversation to conversation_log for later eval review
-    # (see conversation_log.py), and this test's DATABASE_URL locally
-    # points at the same real database that data is meant for. Without
-    # this, running the suite locally would silently write a synthetic
-    # test row into real eval data every time.
-    patch("src.ui.chat.log_conversation_best_effort"),
-):
-    chat._render_example_prompts()
+_render_example_prompts()
 """)
     at.run()
     assert not at.exception
@@ -358,9 +364,13 @@ with (
     example_button.click().run()
 
     assert not at.exception
-    roles = [entry[0] for entry in at.session_state.chat_history]
-    assert roles == ["user", "assistant"]
-    assert at.session_state.chat_history[0][1] == "How should White meet the Sicilian Defense?"
+    # Not submitted yet -- only stashed. chat_history stays untouched here;
+    # the actual submission is render_main_screen's job on the next pass.
+    assert at.session_state.chat_history == []
+    assert at.session_state.pending_question == (
+        "How should White meet the Sicilian Defense?",
+        None,
+    )
 
 
 def test_find_related_resources_shows_a_fallback_instead_of_crashing_on_api_failure():
@@ -453,9 +463,15 @@ st.session_state["_result"] = _describe_uploaded_game(_FakeUpload(pgn), "")
 def test_submit_question_logs_the_real_conversation_for_later_eval_review():
     """_submit_question is the one path every question submission goes
     through (main chat input, example prompts, and the board-side ask
-    form, via pending_board_question) -- confirms it actually calls
+    form, via pending_question) -- confirms it actually calls
     log_conversation_best_effort with the real question/fen/answer, not
     just that logging doesn't crash anything.
+
+    Both get_db_pool and log_conversation_best_effort are mocked, not just
+    the latter -- get_db_pool() is evaluated as log_conversation_best_
+    effort's own argument before that (mocked) function is ever called,
+    so leaving it real would hit a genuine DB lookup here regardless of
+    the second patch (a real, reproduced CI failure from exactly this).
     """
     at = AppTest.from_string("""
 from unittest.mock import MagicMock, patch
@@ -466,6 +482,7 @@ st.session_state.chat_history = []
 mock_log = MagicMock()
 with (
     patch("src.ui.chat.ask_agent", return_value="Play 3.d4."),
+    patch("src.ui.chat.get_db_pool", return_value=MagicMock()),
     patch("src.ui.chat.log_conversation_best_effort", mock_log),
 ):
     chat._submit_question(

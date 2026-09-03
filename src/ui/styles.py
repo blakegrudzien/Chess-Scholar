@@ -150,12 +150,55 @@ button[data-testid="stBaseButton-secondaryFormSubmit"] {
    height param -- confirmed live from a real bug report, where it painted
    this same background onto the board's own column block too. Matching
    the literal pixel value ties this rule to MESSAGE_PANEL_HEIGHT_PX in
-   chat.py; update both together if that constant ever changes. */
+   chat.py; update both together if that constant ever changes.
+
+   resize: vertical adds a native browser drag handle to the chatbox's own
+   bottom-right corner, so a long answer that would otherwise need
+   scrolling inside a fixed 560px box can be dragged taller instead. This
+   needs flex: none !important alongside it -- confirmed live, not assumed:
+   Streamlit's own generated class on this element sets `flex: 1 1 0%`
+   (a column-direction flex item with flex-basis 0), and per the flexbox
+   spec a flex-basis other than auto makes the main-axis size come from
+   flex-grow/shrink distribution, not from the specified height property at
+   all -- so with Streamlit's flex rule left standing, even forcing height
+   directly via JS with !important had zero effect (verified in a live
+   browser), and the same held for the native resize handle, which works by
+   setting that same now-ignored inline height. flex: none (equivalent to
+   0 0 auto) takes this element out of that distribution so its own height
+   -- 560px normally, whatever the user drags it to once resize is enabled
+   -- is what actually renders. Deliberately not persisted across a rerun
+   (asking another question replaces this DOM node and it snaps back to
+   MESSAGE_PANEL_HEIGHT_PX) -- a plain CSS affordance for the current
+   conversation, not saved state. */
 div[data-testid="stVerticalBlock"][height="560px"] {
     background: #F1E8D4;
     box-shadow:
         inset 0 2px 3px rgba(43, 31, 23, 0.30),
         inset 0 -1px 0 rgba(237, 225, 204, 0.35);
+    flex: none !important;
+    resize: vertical;
+    min-height: 200px;
+}
+
+/* A second real bug found live, chained off the one above: freeing the
+   chatbox from Streamlit's flex-basis sizing lets it grow taller when
+   dragged, but every ancestor up to the two-column row still carries its
+   own Streamlit-computed fixed pixel height (stLayoutWrapper, this
+   column's stVerticalBlock, stColumn, stHorizontalBlock) -- none of them
+   grow to match, so the resized box simply overflows past them and draws
+   on top of the chat input box below instead of pushing it down.
+   :has(.st-key-chat_panel) reaches those ancestors by relationship rather
+   than by their emotion-hashed classnames, which aren't stable selector
+   targets. height: auto lets each level size to its actual children again
+   (all were already overflow: visible, confirmed live -- nothing here was
+   relying on the fixed number to clip content), which is what makes a
+   drag-resize actually push the chat input down instead of overlapping
+   it. */
+div[data-testid="stLayoutWrapper"]:has(.st-key-chat_panel),
+div[data-testid="stVerticalBlock"]:has(.st-key-chat_panel),
+div[data-testid="stColumn"]:has(.st-key-chat_panel),
+div[data-testid="stHorizontalBlock"]:has(.st-key-chat_panel) {
+    height: auto !important;
 }
 
 /* Chat bubbles: originally keyed on stChatMessageAvatarUser/Assistant, but

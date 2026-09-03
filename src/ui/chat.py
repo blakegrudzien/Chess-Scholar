@@ -187,11 +187,21 @@ def ask_with_status(
     The stop button doesn't need explicit click handling: Streamlit treats
     interactions as implicit yield points during a running script, so any
     click while this is in progress interrupts it at the next word reveal.
+
+    Declared after answer_area, not before it -- a real, reported bug:
+    message_panel autoscrolls to follow new content as it streams in (see
+    render_main_screen), and a placeholder's position in the DOM is fixed
+    at the point it's created, not where its content later fills in. With
+    the button declared first, it stayed pinned above the streamed text,
+    so a long answer scrolled it out of view above the fold right when a
+    user most wants to reach it. Declaring it after answer_area puts it
+    right below the growing text instead, exactly where autoscroll already
+    keeps the view anchored.
     """
     status = st.status("Thinking...", expanded=True)
+    answer_area = st.empty()
     stop_placeholder = st.empty()
     stop_placeholder.button("Stop generating", key="stop_generating")
-    answer_area = st.empty()
 
     accumulated_text = ""
     words_this_turn = 0
@@ -641,13 +651,13 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
     the same transcript instead of two disconnected conversations.
 
     Only ever called from inside chat_col (see render_main_screen and its
-    "pending_board_question" handling below) -- never directly from a
+    "pending_question" handling below) -- never directly from a
     board-side button. ask_with_status renders live UI (a status panel, a
     streaming answer area) at whatever point in the layout it's called from,
     so calling it directly from a button inside the narrow board column
     would put that live UI in the board column instead of the chat
     transcript. Board-side triggers stash (question, fen) in
-    st.session_state.pending_board_question and rerun instead, so the
+    st.session_state.pending_question and rerun instead, so the
     actual submission always happens from chat_col on the next script pass.
 
     fen_context, when given, is sent to the model as part of the question
@@ -697,7 +707,24 @@ def _render_example_prompts() -> None:
     Claude.ai/Gemini all show suggested prompts on a fresh conversation,
     rather than by upfront explanation (see the "How this works" spotlight
     tour, app.py's render_tutorial_trigger, for that). Clicking one submits
-    it directly, the same as typing it and pressing enter would.
+    it, the same as typing it and pressing enter would.
+
+    Stashes into st.session_state.pending_question and reruns rather than
+    calling _submit_question directly -- a real, reproduced bug: this
+    function is called from inside the `if not st.session_state.
+    chat_history:` branch in render_main_screen, *before* that same
+    script run's `for ... in st.session_state.chat_history:` loop below
+    it. Calling _submit_question inline here mutates and renders the new
+    question/answer pair on the spot, and then the loop right after
+    renders that same now-nonempty chat_history all over again, in the
+    same run -- every message doubled, plus the example buttons still
+    visible above them since the `if not chat_history` check had already
+    committed to true for this run. Stashing and rerunning, the same
+    pattern _render_board_panel's own triggers already use for the
+    identical reason (see that function's docstring), lets a fresh script
+    run make the correct decision: chat_history is non-empty from the
+    start, so this function is skipped entirely and the loop renders the
+    new pair exactly once.
     """
     st.caption("Try asking:")
     examples = [
@@ -712,7 +739,8 @@ def _render_example_prompts() -> None:
     ]
     for i, example in enumerate(examples):
         if st.button(example, key=f"example_prompt_{i}", width="stretch"):
-            _submit_question(example)
+            st.session_state.pending_question = (example, None)
+            st.rerun()
 
 
 def render_main_screen() -> None:
@@ -745,8 +773,8 @@ def render_main_screen() -> None:
         st.session_state.board = chess.Board()
     if "last_illegal_attempt" not in st.session_state:
         st.session_state.last_illegal_attempt = None
-    if "pending_board_question" not in st.session_state:
-        st.session_state.pending_board_question = None
+    if "pending_question" not in st.session_state:
+        st.session_state.pending_question = None
     if "board_generation" not in st.session_state:
         st.session_state.board_generation = 0
     if "game_path" not in st.session_state:
@@ -782,11 +810,19 @@ def render_main_screen() -> None:
                     if fen is not None:
                         st.caption(f"Position: `{fen}`", help=_FEN_HELP)
 
-            pending = st.session_state.pending_board_question
+            pending = st.session_state.pending_question
             if pending is not None:
-                st.session_state.pending_board_question = None
+                st.session_state.pending_question = None
                 pending_question, pending_fen = pending
                 _submit_question(pending_question, fen_context=pending_fen)
+                # Rerun rather than let this script run fall through to the
+                # code below: chat_history was still empty at the `if not
+                # st.session_state.chat_history:` check above (it's ABOVE
+                # this block), so _render_example_prompts() already rendered
+                # once this run despite chat_history being non-empty now --
+                # a fresh rerun starts over with chat_history correctly
+                # non-empty from the start, so that check skips it.
+                st.rerun()
 
         submission = st.chat_input(
             "Ask about openings, positions, or chess history...",
@@ -877,7 +913,7 @@ def _render_board_panel() -> None:
     which persist until explicitly replaced. No dedup bookkeeping needed.
 
     Neither button below calls ask_with_status directly -- both stash a
-    (question, fen) pair in st.session_state.pending_board_question and
+    (question, fen) pair in st.session_state.pending_question and
     st.rerun() instead, so the actual submission (and its live status/
     streaming UI) happens from inside chat_col on the next script pass, not
     in this narrow column. See _submit_question's docstring for why.
@@ -991,7 +1027,7 @@ def _render_board_panel() -> None:
                 st.rerun()
 
     if st.button("Evaluate this position with Stockfish", type="primary", key="evaluate_position"):
-        st.session_state.pending_board_question = (
+        st.session_state.pending_question = (
             "Evaluate this chess position and tell me the best move. "
             "Use the engine, don't just guess.",
             current_board.fen(),
@@ -1030,7 +1066,7 @@ def _render_board_panel() -> None:
         )
         asked = st.form_submit_button("Ask")
     if asked and position_question:
-        st.session_state.pending_board_question = (position_question, current_board.fen())
+        st.session_state.pending_question = (position_question, current_board.fen())
         st.rerun()
 
     st.divider()
