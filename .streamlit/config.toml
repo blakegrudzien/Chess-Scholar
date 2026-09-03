@@ -1,3 +1,12 @@
+# This app has no auth and is deployed on a public URL -- an uncaught
+# exception should never hand an anonymous visitor a full Python traceback
+# (exception type, message, file paths, library internals). Streamlit's own
+# default for this is "full"; logs (stdout/stderr, captured by Streamlit
+# Cloud's own log viewer -- see app.py's logging.basicConfig comment) still
+# get the complete picture either way, so nothing is lost for debugging.
+[client]
+showErrorDetails = "none"
+
 # Visual identity: walnut, oxblood, and parchment -- a chess study, not a
 # SaaS dashboard. See scripts/init_db.sql-adjacent design notes (or the
 # published specimen) for the full rationale behind these values.

@@ -361,9 +361,18 @@ def test_find_related_resources_shows_a_fallback_instead_of_crashing_on_api_fail
     a 5xx) used to crash the whole script. resource_recommendations must
     stay None (not an empty list) on failure, so the button reappears for
     a retry instead of wrongly claiming nothing relevant was found.
+
+    Every get_*() resource getter (get_db_pool, get_voyage, ...) is mocked
+    too, not just recommend_resources -- they're evaluated as recommend_
+    resources' own call arguments, so they run (for real, hitting a real
+    DATABASE_URL env var this test environment has no reason to have)
+    before the mocked function is ever reached otherwise. Real production
+    calls don't hit this: by the time this button is clickable, a full Q&A
+    exchange has already run through ask_agent, which already forced every
+    one of these st.cache_resource-cached getters to succeed once.
     """
     at = AppTest.from_string("""
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import httpx
 import anthropic
 import streamlit as st
@@ -376,7 +385,14 @@ st.session_state.chat_history = [
 st.session_state.resource_recommendations = None
 
 error = anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com"))
-with patch("src.ui.chat.recommend_resources", side_effect=error):
+with (
+    patch("src.ui.chat.get_db_pool", return_value=MagicMock()),
+    patch("src.ui.chat.get_voyage", return_value=MagicMock()),
+    patch("src.ui.chat.get_anthropic_client", return_value=MagicMock()),
+    patch("src.ui.chat.get_lichess_http_client", return_value=MagicMock()),
+    patch("src.ui.chat.get_lichess_pacer", return_value=MagicMock()),
+    patch("src.ui.chat.recommend_resources", side_effect=error),
+):
     chat._render_resource_recommendations()
 """)
     at.run()

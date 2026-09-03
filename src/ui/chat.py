@@ -603,6 +603,20 @@ def _to_model_text(content: str, fen_context: str | None) -> str:
 # letting a long session's cost run away.
 MAX_HISTORY_MESSAGES = 10
 
+# This app has no auth, and every question bills at least one Anthropic call
+# (often several, across tool-calling turns) plus a Voyage embedding call
+# whenever search_annotations fires -- with a public deployment URL, nothing
+# else stands between a visitor and this app's own API budget. Session-local,
+# not a deployment-wide counter: it doesn't stop a determined attacker
+# spinning up fresh sessions (st.session_state resets per session), but it
+# does stop the far likelier case -- a stuck retry, someone mashing an
+# example-prompt button, or a casual script -- without penalizing every other
+# concurrent visitor the way a shared counter would. Pair with a hard
+# spending cap in the Anthropic/Voyage dashboards for the backstop this can't
+# provide on its own.
+MAX_REQUESTS_PER_MINUTE = 8
+REQUEST_WINDOW_SECONDS = 60
+
 
 def _build_message_history() -> list[dict[str, str]]:
     """The most recent chat_history entries, translated into the plain
@@ -640,7 +654,24 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
     and stored alongside the question in chat_history so the transcript can
     show which position a question was about, without the FEN prefix itself
     ever appearing as if the user had typed it.
+
+    Rate-limited first, before anything else: see MAX_REQUESTS_PER_MINUTE's
+    own comment. Checked (and the attempt recorded) ahead of every other
+    branch below so a throttled request never reaches ask_with_status and
+    never touches chat_history -- a rejected question shouldn't appear in
+    the transcript as if it had been asked and silently ignored.
     """
+    now = time.monotonic()
+    request_times = st.session_state.setdefault("request_times", [])
+    request_times[:] = [t for t in request_times if now - t < REQUEST_WINDOW_SECONDS]
+    if len(request_times) >= MAX_REQUESTS_PER_MINUTE:
+        st.warning(
+            "You're asking questions faster than this demo can keep up with -- "
+            "try again in a moment."
+        )
+        return
+    request_times.append(now)
+
     history = _build_message_history()  # prior turns, before this one is appended below
     st.session_state.chat_history.append(("user", question, fen_context, []))
     with st.chat_message("user", avatar=_CHAT_AVATARS["user"]):
