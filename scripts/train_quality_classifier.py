@@ -18,7 +18,9 @@ Run as a module from the repo root:
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 import joblib
@@ -26,6 +28,7 @@ from sklearn.base import ClassifierMixin
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegressionCV
 
+from src.recommendation.feature_extraction import FEATURE_NAMES
 from src.recommendation.quality_classifier import (
     Metrics,
     breakdown_metrics,
@@ -41,6 +44,15 @@ logger = logging.getLogger(__name__)
 CANDIDATES_PATH = Path("data/processed/study_candidates.jsonl")
 LABELS_PATH = Path("data/processed/study_labels.jsonl")
 MODEL_OUTPUT_PATH = Path("models/quality_classifier.joblib")
+# A sibling JSON file, not a docstring or commit message, so a reader (or
+# build_study_index.py itself, see its own check) can get this
+# programmatically instead of digging through git log -- what the
+# committed .joblib actually is: when it was trained, on how many
+# examples, which model won and at what cross-validated ROC-AUC, and the
+# exact FEATURE_NAMES order it was fit against. That last field is what
+# lets build_study_index.py catch a future FEATURE_NAMES reorder before it
+# silently corrupts every prediction, instead of after.
+MODEL_METADATA_PATH = Path("models/quality_classifier.meta.json")
 RANDOM_STATE = 0
 
 
@@ -63,7 +75,15 @@ def _build_candidate_models() -> dict[str, ClassifierMixin]:
             class_weight="balanced",
             max_iter=1000,
             random_state=RANDOM_STATE,
-            scoring="accuracy",
+            # roc_auc, not accuracy: this module's own docstring picks
+            # ROC-AUC over the outer two candidate models specifically
+            # because ranking quality, independent of any one threshold,
+            # is what the downstream cascade needs -- the same reasoning
+            # applies one level down to how this model's own regularization
+            # strength gets tuned. Scoring the inner search by accuracy
+            # while scoring the outer choice by ROC-AUC was a real mismatch
+            # between what's stated and what's implemented.
+            scoring="roc_auc",
             l1_ratios=[0.0],
             use_legacy_attributes=False,
         ),
@@ -125,8 +145,26 @@ def main() -> None:
 
     MODEL_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(winner_pipeline, MODEL_OUTPUT_PATH)
+    MODEL_METADATA_PATH.write_text(
+        json.dumps(
+            {
+                "trained_at": datetime.now(UTC).isoformat(),
+                "model_name": winner_name,
+                "cv_roc_auc": scores[winner_name],
+                "n_examples": len(examples),
+                "feature_names": FEATURE_NAMES,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     logger.info(
-        "Refit %s on all %d examples and saved to %s", winner_name, len(examples), MODEL_OUTPUT_PATH
+        "Refit %s on all %d examples and saved to %s (metadata: %s)",
+        winner_name,
+        len(examples),
+        MODEL_OUTPUT_PATH,
+        MODEL_METADATA_PATH,
     )
 
 

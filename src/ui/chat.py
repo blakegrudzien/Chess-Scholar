@@ -9,12 +9,14 @@ from __future__ import annotations
 import html
 import io
 import itertools
+import logging
 import os
 import re
 import tempfile
 import time
 from collections.abc import Callable
 
+import anthropic
 import chess
 import chess.pgn
 import chess.svg
@@ -28,7 +30,16 @@ from src.recommendation.pipeline import (
     recommend_resources,
 )
 from src.ui.board_component import chess_board
-from src.ui.resources import get_anthropic_client, get_db_pool, get_engine_pool, get_voyage
+from src.ui.resources import (
+    get_anthropic_client,
+    get_db_pool,
+    get_engine_pool,
+    get_lichess_http_client,
+    get_lichess_pacer,
+    get_voyage,
+)
+
+logger = logging.getLogger(__name__)
 
 # Anthropic's raw text deltas arrive in relatively large pieces (a clause or
 # sentence at a time), not the smooth word-by-word reveal seen in Claude.ai
@@ -221,16 +232,32 @@ def ask_with_status(
         if not touched_fens or touched_fens[-1][0] != fen:
             touched_fens.append((fen, label))
 
-    answer = ask_agent(
-        question, on_step=on_step, on_chunk=on_chunk, on_position=on_position, history=history
-    )
+    try:
+        answer = ask_agent(
+            question, on_step=on_step, on_chunk=on_chunk, on_position=on_position, history=history
+        )
+    except anthropic.APIError:
+        # Covers every real network/API failure mode (rate limit, timeout,
+        # connection drop, a transient 5xx/overloaded error from Anthropic
+        # itself) -- none of this was caught anywhere before. tool_runner
+        # only catches exceptions a *tool* raises (see build_tools' own
+        # docstring); the SDK's own calls to Anthropic sit outside that,
+        # so this used to propagate all the way up as a raw, unhandled
+        # exception, crashing the whole Streamlit script mid-answer.
+        # logger.exception, not just logger.error: this is a real failure
+        # worth a full traceback in the logs, not just a one-line note.
+        logger.exception("ask_agent failed")
+        answer = ""
 
     if not answer.strip():
         # The tool-calling loop can end on a turn whose only content was a
         # tool call (see chess_agent.ask()'s docstring on how final_text is
         # tracked) -- rare, but when it happens the chat bubble would
         # otherwise render nothing at all with no indication anything went
-        # wrong. A short, honest placeholder beats silence.
+        # wrong. A short, honest placeholder beats silence. Also the
+        # fallback for the API-error case just above: an empty answer
+        # already has well-tested, working UI for "let the user know and
+        # let them retry" -- no need for a second, parallel message.
         answer = (
             "Something interrupted this response before it finished -- "
             "try asking again, possibly with a narrower question."
@@ -301,9 +328,31 @@ def _render_resource_recommendations() -> None:
         with st.status("Looking for related resources...", expanded=True) as status:
             status.write("Searching the study library for relevant chapters.")
             status.write("Checking whether a matching master game exists in the corpus.")
-            st.session_state.resource_recommendations = recommend_resources(
-                question, get_db_pool(), get_voyage(), client=get_anthropic_client()
-            )
+            try:
+                st.session_state.resource_recommendations = recommend_resources(
+                    question,
+                    get_db_pool(),
+                    get_voyage(),
+                    client=get_anthropic_client(),
+                    http_client=get_lichess_http_client(),
+                    pacer=get_lichess_pacer(),
+                )
+            except anthropic.APIError:
+                # Same unguarded-API-call gap as ask_with_status's call to
+                # ask_agent (see that fix's own comment) -- this call
+                # chains Anthropic + Voyage + live Lichess HTTP behind one
+                # click with nothing catching a failure in any of them.
+                # Left inside the `with` block (not wrapped around it) so
+                # `status` is still live to update here, and resource_
+                # recommendations stays None -- the button reappears on
+                # the next rerun instead of wrongly claiming nothing was
+                # found.
+                logger.exception("recommend_resources failed")
+                status.update(
+                    label="Something went wrong looking that up. Try again in a moment.",
+                    state="error",
+                )
+                return
             status.update(label="Done", state="complete", expanded=False)
 
     recommendations = st.session_state.resource_recommendations
@@ -393,6 +442,16 @@ def _describe_uploaded_game(uploaded_file, user_text: str) -> str | None:
         # whether there's more than one, without fully parsing an upload
         # (untrusted input) that could contain a large number of games.
         first_two_games = list(itertools.islice(parse_pgn(tmp_path, source="user_upload"), 2))
+    except ValueError:
+        # compute_game_id (parse_pgn -> parse_game -> compute_game_id)
+        # deliberately raises ValueError if a header contains ID_DELIMITER
+        # (see hash_utils.check_no_delimiter) -- rare, but this is
+        # untrusted user input, and it's exactly the kind of thing someone
+        # poking at the upload feature might hit. The same honest message
+        # used below for a genuinely unparseable file already covers this
+        # case too; no need for a second, more specific one.
+        st.error("Couldn't find a game in that file.")
+        return None
     finally:
         os.unlink(tmp_path)
 

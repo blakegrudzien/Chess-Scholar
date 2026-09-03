@@ -6,7 +6,13 @@ import psycopg2
 import pytest
 from pgvector.psycopg2 import register_vector
 
-from scripts.build_study_index import _embed_texts, _select_eligible, build_index
+from scripts.build_study_index import (
+    _check_feature_order_matches_training,
+    _embed_texts,
+    _select_eligible,
+    build_index,
+)
+from src.recommendation.feature_extraction import FEATURE_NAMES
 
 TEST_DB = "chess_rag_build_study_index_test"
 
@@ -82,6 +88,48 @@ def _candidate(study_id: str, likes: int = 100) -> dict:
     }
 
 
+def test_check_feature_order_matches_training_passes_when_consistent(tmp_path):
+    metadata_path = tmp_path / "meta.json"
+    metadata_path.write_text(json.dumps({"feature_names": FEATURE_NAMES}), encoding="utf-8")
+
+    _check_feature_order_matches_training(metadata_path)  # must not raise
+
+
+def test_check_feature_order_matches_training_raises_on_a_reorder(tmp_path):
+    """Regression test: the fitted ColumnTransformer inside the saved
+    pipeline bakes in feature *positions*, not names -- a future reorder
+    (or insertion/removal) of a FEATURE_NAMES entry without retraining
+    would silently score every candidate against the wrong columns
+    instead of raising, since nothing else checks this at all.
+    """
+    metadata_path = tmp_path / "meta.json"
+    reordered = [*FEATURE_NAMES[1:], FEATURE_NAMES[0]]
+    metadata_path.write_text(json.dumps({"feature_names": reordered}), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="FEATURE_NAMES has changed"):
+        _check_feature_order_matches_training(metadata_path)
+
+
+def test_check_feature_order_matches_training_raises_when_metadata_missing(tmp_path):
+    missing_path = tmp_path / "does_not_exist.json"
+
+    with pytest.raises(RuntimeError, match="is missing"):
+        _check_feature_order_matches_training(missing_path)
+
+
+def test_select_eligible_raises_a_clear_error_when_the_model_is_missing():
+    """Regression test: joblib.load(MODEL_PATH) on a fresh clone (or a
+    models/ directory accidentally cleaned) used to raise a bare
+    FileNotFoundError with no guidance -- label_studies_app.py, one script
+    over in this same pipeline, already gives this exact courtesy for its
+    own missing-input case.
+    """
+    with patch("scripts.build_study_index.MODEL_PATH") as mock_path:
+        mock_path.exists.return_value = False
+        with pytest.raises(RuntimeError, match="train_quality_classifier"):
+            _select_eligible([_candidate("c1", likes=100)])
+
+
 def test_select_eligible_filters_by_quality_and_likes(monkeypatch, tmp_path):
     candidates = [
         _candidate("high_quality_high_likes", likes=100),
@@ -98,7 +146,15 @@ def test_select_eligible_filters_by_quality_and_likes(monkeypatch, tmp_path):
         [[1 - p, p] for p in [next(probas)]]
     )
 
-    with patch("scripts.build_study_index.joblib.load", return_value=fake_pipeline):
+    with (
+        patch("scripts.build_study_index.joblib.load", return_value=fake_pipeline),
+        # Isolated from the real models/quality_classifier.meta.json on
+        # disk deliberately -- this test shouldn't start failing (or
+        # passing only by coincidence) because someone retrains the real
+        # model later; see the dedicated tests for
+        # _check_feature_order_matches_training's own behavior.
+        patch("scripts.build_study_index._check_feature_order_matches_training"),
+    ):
         eligible = _select_eligible(candidates)
 
     assert [c["study_id"] for c, _ in eligible] == ["high_quality_high_likes"]
@@ -121,7 +177,10 @@ def test_select_eligible_against_a_real_fitted_pipeline(tmp_path):
     real_pipeline = build_pipeline(LogisticRegression())
     real_pipeline.fit(x, y)
 
-    with patch("scripts.build_study_index.joblib.load", return_value=real_pipeline):
+    with (
+        patch("scripts.build_study_index.joblib.load", return_value=real_pipeline),
+        patch("scripts.build_study_index._check_feature_order_matches_training"),
+    ):
         eligible = _select_eligible([_candidate("new1", likes=100)])
 
     assert len(eligible) in (0, 1)  # doesn't raise; either outcome is valid for random data

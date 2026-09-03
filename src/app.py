@@ -12,6 +12,7 @@ Known reliability caveats (see CLAUDE.md) surfaced directly in the UI:
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -24,6 +25,20 @@ import streamlit as st  # noqa: E402
 from src.ui.chat import render_main_screen  # noqa: E402
 from src.ui.styles import apply_global_styles  # noqa: E402
 from src.ui.tutorial_overlay import render_tutorial_trigger  # noqa: E402
+
+# Without this, every logger.info/exception call anywhere in the app --
+# chess_agent.ask()'s per-turn timing (built specifically to answer "is
+# this actually slow" instead of guessing, see its own comment) and
+# chat.py's new logger.exception calls on a failed API call included --
+# goes nowhere: Python's logging module only guarantees a WARNING-or-above
+# fallback handler when nothing has configured one (confirmed in
+# engine_pool.py's own docstring), and INFO-level calls sit below that.
+# basicConfig() is a safe no-op on Streamlit's per-interaction script
+# reruns (it only configures the root logger's handlers once, unless
+# force=True is passed, which this doesn't). Streamlit Cloud captures
+# stdout/stderr into its own log viewer, so this is also what makes these
+# logs visible at all on the deployed demo, not just a local run.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 st.set_page_config(page_title="Chess RAG Assistant", layout="wide")
 apply_global_styles()

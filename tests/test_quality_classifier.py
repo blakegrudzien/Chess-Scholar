@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 from sklearn.linear_model import LogisticRegression
 
 from src.recommendation.quality_classifier import (
@@ -76,6 +77,27 @@ def test_load_labeled_dataset_preserves_missing_phase_as_none(tmp_path):
 
     examples = load_labeled_dataset(candidates_path, labels_path)
     assert examples[0].phase is None
+
+
+def test_load_labeled_dataset_raises_a_clear_error_for_an_orphaned_label(tmp_path):
+    """Regression test: a study_labels.jsonl entry whose study_id isn't in
+    study_candidates.jsonl (a stale labels file, a hand-edited candidates
+    file, or a wrong path) used to raise a bare, unhelpful KeyError. This
+    is a real possibility, not just a theoretical one -- the two files are
+    edited independently (label_studies_app.py appends to one, collect_
+    study_candidates.py to the other) with nothing enforcing they stay in
+    sync.
+    """
+    candidates_path = tmp_path / "candidates.jsonl"
+    labels_path = tmp_path / "labels.jsonl"
+    _write_jsonl(candidates_path, [_candidate("c1")])
+    _write_jsonl(
+        labels_path,
+        [{"study_id": "orphaned_id", "genre": "concept", "quality": "recommend"}],
+    )
+
+    with pytest.raises(ValueError, match="orphaned_id"):
+        load_labeled_dataset(candidates_path, labels_path)
 
 
 def test_build_feature_matrix_shape_and_order(tmp_path):

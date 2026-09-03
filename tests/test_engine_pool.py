@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import chess.engine
 import pytest
 
 from src.engine.engine_pool import EngineBusyError, EnginePool
@@ -23,6 +24,51 @@ def test_checkout_yields_a_pooled_engine_and_returns_it_after():
         with pytest.raises(EngineBusyError):
             with pool.checkout():
                 pass
+
+
+def test_checkout_discards_a_terminated_engine_and_respawns_a_replacement():
+    """Regression test: the old code unconditionally returned whatever
+    engine checkout() handed out back to the pool in a bare `finally`,
+    even one whose subprocess had just died mid-use (EngineTerminatedError
+    -- crashed, killed, an internal fault). The next checkout() would then
+    hand out that same broken engine and fail identically. A dead engine
+    must be discarded, not pooled, and replaced so self.size (quoted
+    directly in EngineBusyError's message) stays true.
+    """
+    dead_engine = MagicMock(name="dead")
+    replacement_engine = MagicMock(name="replacement")
+    with patch("chess.engine.SimpleEngine.popen_uci", side_effect=[dead_engine]):
+        pool = EnginePool("stockfish", size=1)
+
+    with (
+        patch("chess.engine.SimpleEngine.popen_uci", return_value=replacement_engine),
+        pytest.raises(chess.engine.EngineTerminatedError),
+    ):
+        with pool.checkout() as engine:
+            assert engine is dead_engine
+            raise chess.engine.EngineTerminatedError("process exited")
+
+    # The replacement, not the dead engine, is what the next caller gets --
+    # and the pool is back at full capacity (size=1), not exhausted.
+    with pool.checkout() as engine:
+        assert engine is replacement_engine
+
+
+def test_checkout_still_returns_a_healthy_engine_after_an_unrelated_error():
+    """A caller's own bug (or any exception unrelated to engine health)
+    must not be treated as if the engine itself died -- it's still a
+    perfectly good, live subprocess and belongs back in the pool.
+    """
+    engine = MagicMock(name="engine")
+    with patch("chess.engine.SimpleEngine.popen_uci", side_effect=[engine]):
+        pool = EnginePool("stockfish", size=1)
+
+    with pytest.raises(ValueError, match="bad argument"):
+        with pool.checkout() as checked_out:
+            raise ValueError("bad argument")
+
+    with pool.checkout() as checked_out:
+        assert checked_out is engine  # the same object, not a respawned one
 
 
 def test_close_quits_every_engine():

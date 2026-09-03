@@ -22,6 +22,7 @@ other than "the classifier didn't like it."
 from __future__ import annotations
 
 from src.ingestion.annotation_extractor import extract_chapter_comment_text
+from src.recommendation.quality_classifier import DEFAULT_QUALITY_THRESHOLD
 from src.recommendation.study_pgn import iter_study_chapters
 
 # A hard floor independent of the quality classifier's own judgment: even a
@@ -35,12 +36,6 @@ from src.recommendation.study_pgn import iter_study_chapters
 # more honest) doesn't have to be good enough to *serve*, since serving
 # carries a different risk than training does.
 MIN_LIKES_FOR_RECOMMENDATION = 20
-
-# The classifier's own default decision boundary (matches how
-# quality_classifier.compute_metrics evaluates precision/recall/F1), not
-# independently tuned -- revisit together with those metrics if this ever
-# needs to move.
-DEFAULT_QUALITY_THRESHOLD = 0.5
 
 # Annotation text is embedded up to this many characters -- long enough to
 # capture what a study actually teaches, short enough to keep embedding

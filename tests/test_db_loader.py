@@ -1,3 +1,5 @@
+import logging
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import psycopg2.pool
@@ -233,6 +235,35 @@ def test_load_chunks_skips_insert_when_no_chunks():
     assert chunks_inserted == 0
     mock_execute_values.assert_not_called()
     conn.commit.assert_called_once()
+
+
+def test_load_chunks_skips_a_chunk_with_no_year_instead_of_crashing_the_batch(caplog):
+    """Regression test: chunks.year is NOT NULL (scripts/init_db.sql,
+    "required for trend synthesis, do not skip"), but AnnotationChunk.year
+    is `int | None` -- pgn_parser.parse_year legitimately returns None for
+    a header ChessBase itself writes when a game's date is unknown
+    ("????.??.??"). That's routine in a real export, not a corner case:
+    before this fix, the first such chunk aborted the whole in-flight
+    transaction, silently discarding every chunk since the last commit,
+    not just the undated one. An undated chunk must be skipped (and
+    counted, loudly, so this is visible) rather than crash the batch or
+    insert a row that violates the schema's own stated invariant.
+    """
+    dated = _sample_chunk()
+    undated = replace(dated, text="An annotation with no determinable year.", year=None)
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.rowcount = 1
+
+    with (
+        patch("src.ingestion.db_loader.execute_values") as mock_execute_values,
+        caplog.at_level(logging.WARNING),
+    ):
+        chunks_inserted = load_chunks([dated, undated], conn)
+
+    assert chunks_inserted == 1
+    rows = mock_execute_values.call_args.args[2]
+    assert len(rows) == 1  # only the dated chunk was ever handed to execute_values
+    assert "1 chunk" in caplog.text
 
 
 def test_load_chunks_flushes_in_batches():

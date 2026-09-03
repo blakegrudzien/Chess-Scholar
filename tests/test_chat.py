@@ -192,6 +192,36 @@ st.session_state["_touched"] = touched
     assert any("interrupted" in value.lower() for value in markdown_values)
 
 
+def test_ask_with_status_shows_a_fallback_message_when_the_api_call_fails():
+    """Regression test: ask_agent (chess_agent.ask -> the Anthropic SDK's
+    own tool_runner) can raise anthropic.APIError for a real, transient
+    failure -- a rate limit, a dropped connection, a 5xx from Anthropic --
+    none of which is a tool exception, so tool_runner's own "catches every
+    exception a tool raises" guarantee doesn't cover it. Before this fix,
+    that exception propagated all the way up and crashed the whole
+    Streamlit script instead of showing the same graceful fallback already
+    used for an empty answer.
+    """
+    at = AppTest.from_string("""
+from unittest.mock import patch
+import httpx
+import anthropic
+from src.ui import chat
+
+error = anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com"))
+with patch("src.ui.chat.ask_agent", side_effect=error):
+    answer, touched = chat.ask_with_status("What's the best response to 1. e4?")
+
+import streamlit as st
+st.session_state["_answer"] = answer
+st.session_state["_touched"] = touched
+""")
+    at.run()
+    assert not at.exception
+    assert "interrupted" in at.session_state["_answer"].lower()
+    assert at.session_state["_touched"] == []
+
+
 def test_ask_with_status_places_a_diagram_at_its_marker_end_to_end():
     """The actual regression this redesign fixes: a show_opening_line-style
     diagram (a labeled FEN reported through on_position) has to land at its
@@ -322,3 +352,74 @@ with patch("src.ui.chat.ask_agent", return_value="An answer."):
     roles = [entry[0] for entry in at.session_state.chat_history]
     assert roles == ["user", "assistant"]
     assert at.session_state.chat_history[0][1] == "How should White meet the Sicilian Defense?"
+
+
+def test_find_related_resources_shows_a_fallback_instead_of_crashing_on_api_failure():
+    """Regression test: recommend_resources chains Anthropic + Voyage + live
+    Lichess HTTP behind one button click, and nothing caught a failure in
+    any of them -- an anthropic.APIError (rate limit, dropped connection,
+    a 5xx) used to crash the whole script. resource_recommendations must
+    stay None (not an empty list) on failure, so the button reappears for
+    a retry instead of wrongly claiming nothing relevant was found.
+    """
+    at = AppTest.from_string("""
+from unittest.mock import patch
+import httpx
+import anthropic
+import streamlit as st
+from src.ui import chat
+
+st.session_state.chat_history = [
+    ("user", "How should White meet the Sicilian?", None, []),
+    ("assistant", "The Open Sicilian is the main try.", None, []),
+]
+st.session_state.resource_recommendations = None
+
+error = anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com"))
+with patch("src.ui.chat.recommend_resources", side_effect=error):
+    chat._render_resource_recommendations()
+""")
+    at.run()
+    assert not at.exception
+    find_button = next(b for b in at.button if b.label == "Find related resources")
+
+    find_button.click().run()
+
+    assert not at.exception
+    assert at.session_state.resource_recommendations is None
+
+
+def test_describe_uploaded_game_shows_a_friendly_error_for_a_header_delimiter_collision():
+    """Regression test: compute_game_id (parse_pgn -> parse_game ->
+    compute_game_id) deliberately raises ValueError if a PGN header
+    contains hash_utils.ID_DELIMITER ("|") -- untrusted user input this
+    code is directly reachable from via the chat's PGN attach, and until
+    this fix nothing caught it, so a player name containing "|" crashed
+    the whole script instead of showing the same honest message a
+    genuinely unparseable file already gets.
+    """
+    at = AppTest.from_string('''
+class _FakeUpload:
+    def __init__(self, text):
+        self._text = text
+
+    def getvalue(self):
+        return self._text.encode("utf-8")
+
+pgn = """[Event "Test"]
+[White "Weird|Name"]
+[Black "Bob"]
+[Date "2021.05.01"]
+[Result "1-0"]
+
+1. e4 e5 1-0
+"""
+
+from src.ui.chat import _describe_uploaded_game
+import streamlit as st
+st.session_state["_result"] = _describe_uploaded_game(_FakeUpload(pgn), "")
+''')
+    at.run()
+    assert not at.exception
+    assert at.session_state["_result"] is None
+    assert any("couldn't find a game" in e.value.lower() for e in at.error)

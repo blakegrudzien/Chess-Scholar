@@ -19,8 +19,25 @@ Four layers, called by an agent via native tool-calling (not a hand-rolled class
 
 Also supported, no new infra:
 - **Opening profile queries**: Layer 1 stats (piece-placement frequency) + Layer 2
-  prose (plans), synthesized together. This is the flagship demo query.
+  prose (plans), synthesized together. This is the flagship demo query. Built.
+- **Corpus/study recommendations**: a separate small agent (`src/recommendation/`)
+  decides whether a Lichess study or a ChessBase master game is worth surfacing
+  alongside a chat answer, and a trained quality classifier
+  (`scripts/train_quality_classifier.py`, `models/quality_classifier.joblib`)
+  filters the Lichess study pool before it's ever searchable. Built.
+- **Recommended-game replay**: a surfaced ChessBase game can be played through
+  move by move on the board (arrow keys or on-screen buttons), read-only, using
+  the same board component as free play. Built.
+
+Designed but not yet implemented — mentioned here because the schema and some
+supporting code already anticipate them, not because they're live features today:
 - **Trend synthesis**: Layer 2 filtered by `year` column across decade buckets.
+  `chunks.year NOT NULL` and the minimum-chunk-count-per-bucket caveat below are
+  both already enforced in the data layer for when this gets built, but no
+  decade-bucketing query or UI exists yet.
+- **Book corpus**: `chunks.source_type` already accepts `'book'` (see schema),
+  but no ingestion path produces book-sourced chunks yet -- only
+  `'game_annotation'` rows exist today, from ChessBase exports.
 - **Annotated PGN export**: attach Stockfish evals + synthesized commentary as PGN
   comments, export via `python-chess`. Label AI-generated commentary as such.
 
@@ -78,16 +95,26 @@ must have `year` populated — it's required for trend synthesis, not optional.
 
 ## Current status / what's next
 
-Scaffolding + `.vscode` config done. Next: `src/ingestion/pgn_parser.py`,
-`annotation_extractor.py`, `db_loader.py` — this is the foundation, build and test
-this before touching Layer 2/3/4.
+All four layers, the recommendation/quality-classifier subsystem, the
+draggable board, the guided tour, and CI are built and tested. What's left
+before this is fully resume-ready: a security pass and a README (neither
+written yet). The "designed but not yet implemented" list above (trend
+synthesis, book corpus, annotated PGN export) is the honest list of what
+to build next if picking this back up as a feature project rather than a
+polish pass.
 
 ## Commands
 
 - `streamlit run src/app.py` — run the app
 - `psql "$DATABASE_URL" -f scripts/init_db.sql` — init schema
 - `ruff check --fix . && ruff format .` — lint/format
-- `pytest -v tests` — run tests (the draggable-board test skips itself with a
-  clear reason if Playwright/Chromium aren't set up — see below)
+- `pytest -v tests` — run tests. Two things self-skip with a clear reason rather
+  than failing when their dependency isn't set up locally: the draggable-board
+  test needs Playwright/Chromium (see below), and several DB-backed tests
+  (Layer 1/4 structured-search and similarity, the schema constraint tests,
+  the study-index build test) need a local Postgres with pgvector -- CI
+  provisions both automatically (`.github/workflows/ci.yml`'s `postgres`
+  service), so a passing CI run always exercises the real thing even when a
+  local run without Postgres set up doesn't.
 - `pip install -e ".[dev]" && playwright install chromium` — one-time setup for
   the real-browser board test (`tests/test_board_component.py`)

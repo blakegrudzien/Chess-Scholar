@@ -15,9 +15,12 @@ of twice.
 from __future__ import annotations
 
 import io
+import logging
 from collections.abc import Iterator
 
 import chess.pgn
+
+logger = logging.getLogger(__name__)
 
 
 def iter_study_chapters(pgn_text: str) -> Iterator[chess.pgn.Game]:
@@ -35,6 +38,15 @@ def iter_study_chapters(pgn_text: str) -> Iterator[chess.pgn.Game]:
         try:
             game = chess.pgn.read_game(stream)
         except Exception:
+            # Logged, not silently swallowed -- this function backs both
+            # the quality classifier's training features and the search
+            # index's embedding text (see module docstring), so a chapter
+            # silently dropped here quietly degrades training data or
+            # search relevance with nothing pointing at why. The other
+            # "skip and log" spots in this subsystem (e.g. lichess_
+            # scraper._parse_card's "unexpected markup" warning) already
+            # follow this convention; this was the one place that didn't.
+            logger.warning("Skipping the rest of a study's chapters after a PGN parse error")
             return
         if game is None:
             return

@@ -20,7 +20,7 @@ from anthropic import beta_tool
 
 from src.engine.engine_pool import EngineBusyError, EnginePool
 from src.engine.stockfish_eval import DEFAULT_DEPTH, PositionEval, evaluate_position
-from src.ingestion.db_loader import get_connection_with_timeout
+from src.ingestion.db_loader import query_with_retry
 from src.personalization.similarity import find_similar_games as _find_similar_games
 from src.rag.vector_search import search_chunks
 from src.search.structured_search import common_moves_at_ply, eco_summary, piece_placement_frequency
@@ -131,14 +131,6 @@ TOOL_LABELS: dict[str, str] = {
 }
 
 
-DB_RETRYABLE_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
-
-# Original attempt plus one retry on a dropped connection. Named rather than
-# inlined as a bare 2, so the retry budget is a single, intentional value
-# instead of a number a reader has to infer the meaning of.
-MAX_QUERY_ATTEMPTS = 2
-
-
 def _format_position_eval(result: PositionEval) -> str:
     """Shared by evaluate_chess_position and compare_candidate_moves, so a
     single-position eval and one candidate's line in a comparison read
@@ -169,7 +161,10 @@ def build_tools(
     afterward, rather than holding one connection for the whole session --
     this is what lets concurrent sessions run without sharing a connection.
     On a dead connection (Neon closes idle connections in practice), the
-    pool discards it and hands back a fresh one, all inside the tool call:
+    pool discards it and hands back a fresh one, all inside the tool call
+    (see db_loader.query_with_retry, which _query below just binds db_pool
+    to -- src.recommendation.pipeline's DB-backed tools use the same
+    helper directly, so this retry behavior lives in exactly one place):
     the Anthropic SDK's tool_runner catches every exception a tool raises
     and turns it into a tool_result error sent back to the model, so a
     raised psycopg2 error never reaches the caller of `ask()` to trigger a
@@ -191,35 +186,7 @@ def build_tools(
     """
 
     def _query(fn: Callable, *args, **kwargs):
-        conn = get_connection_with_timeout(db_pool)
-        for attempt in range(MAX_QUERY_ATTEMPTS):
-            try:
-                result = fn(conn, *args, **kwargs)
-            except DB_RETRYABLE_ERRORS:
-                # This connection is confirmed dead either way: discard it
-                # rather than returning it to the pool for the next checkout
-                # to fail on too.
-                db_pool.putconn(conn, close=True)
-                if attempt == MAX_QUERY_ATTEMPTS - 1:
-                    raise
-                conn = get_connection_with_timeout(db_pool)
-                continue
-            except Exception:
-                # Not a connection problem, so the connection itself is
-                # still healthy: return it normally before letting the
-                # caller's error (e.g. a bad argument) propagate.
-                db_pool.putconn(conn)
-                raise
-            else:
-                db_pool.putconn(conn)
-                return result
-        # Every iteration above ends in return or raise (the last attempt's
-        # except clause always raises instead of looping again), so this is
-        # unreachable. Stated explicitly rather than left as an implicit gap:
-        # it tells a type checker (and a future reader who changes
-        # MAX_QUERY_ATTEMPTS) that falling out of the loop is a bug, not a
-        # valid path returning None.
-        raise AssertionError("unreachable: every _query attempt returns or raises")
+        return query_with_retry(db_pool, fn, *args, **kwargs)
 
     @beta_tool
     def get_eco_summary(eco_code: str) -> str:

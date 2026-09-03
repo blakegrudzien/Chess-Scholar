@@ -24,12 +24,35 @@ logger = logging.getLogger(__name__)
 
 LICHESS_BASE_URL = "https://lichess.org"
 
+# Every request this project sends to Lichess -- the documented API
+# (LichessClient) and the HTML scraper (lichess_scraper.py) alike -- goes
+# out through a client built by default_http_client, specifically so it
+# always identifies itself. httpx's own default User-Agent
+# ("python-httpx/<version>") says nothing about who's making the request
+# or how to reach them, which is poor etiquette against a real third-party
+# service, more so for lichess_scraper.py's undocumented HTML endpoints
+# than the documented API. The URL is this project's real public repo, not
+# a placeholder.
+USER_AGENT = "chess-rag/0.1.0 (+https://github.com/blakegrudzien/chess-rag)"
+
 # Lichess documents no fixed request-per-minute limit, just "one request at
 # a time" and a minute-long backoff on 429 -- these constants encode that
 # guidance directly rather than guessing at a number of our own.
 REQUEST_PACING_SECONDS = 1.0
 RATE_LIMIT_BACKOFF_SECONDS = 60
 MAX_RATE_LIMIT_RETRIES = 3
+
+
+def default_http_client() -> httpx.Client:
+    """The one place an httpx.Client talking to Lichess gets constructed
+    from scratch -- shared by LichessClient and both lichess_scraper.py
+    functions' own http_client defaults, so USER_AGENT (and base_url/
+    timeout) can't drift out of sync between the three call sites that
+    used to each spell out httpx.Client(base_url=LICHESS_BASE_URL,
+    timeout=30.0) independently, and any of them missing the header by
+    a future copy-paste omission.
+    """
+    return httpx.Client(base_url=LICHESS_BASE_URL, timeout=30.0, headers={"User-Agent": USER_AGENT})
 
 
 class RequestPacer:
@@ -70,7 +93,7 @@ class LichessClient:
         http_client: httpx.Client | None = None,
         pacer: RequestPacer | None = None,
     ) -> None:
-        self._http = http_client or httpx.Client(base_url=LICHESS_BASE_URL, timeout=30.0)
+        self._http = http_client or default_http_client()
         # Accepts an external pacer so a caller making both API and scraper
         # requests in the same run (see collect_study_candidates.py) can
         # share one rate limit across both instead of each object enforcing
@@ -112,7 +135,7 @@ class LichessClient:
         # Every iteration above returns or raises (the last attempt's 429
         # branch always raises instead of looping again), so this is
         # unreachable -- stated explicitly for the same reason as the
-        # equivalent marker in chess_agent._query: it tells a type checker,
+        # equivalent marker in db_loader.query_with_retry: it tells a type checker,
         # and a future reader who changes MAX_RATE_LIMIT_RETRIES, that
         # falling out of the loop is a bug, not a valid path.
         raise AssertionError("unreachable: every fetch_study_pgn attempt returns or raises")

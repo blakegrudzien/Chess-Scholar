@@ -19,6 +19,37 @@ jobs:
       # range actually backs it up.
       matrix:
         python-version: ["3.11", "3.12"]
+    # tests/test_structured_search.py (Layer 1) and tests/test_similarity.py
+    # (Layer 4) both self-skip with pytest.mark.skipif when no local
+    # Postgres is reachable -- and tests/test_build_study_index.py also
+    # needs pgvector specifically. Before this service existed, nothing
+    # here provisioned a database at all, so those three files silently
+    # ran zero assertions on every single CI run with no failure signal
+    # (a skip isn't a failure) -- a green build meant "everything else
+    # passed," not "everything passed." pgvector/pgvector:pg16, not plain
+    # postgres, so the one image covers both needs instead of two services.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # No host/user/password args are passed anywhere these tests call
+      # psycopg2.connect(dbname=...) -- these are the standard libpq PG*
+      # env vars psycopg2 falls back to when none are given explicitly,
+      # matching the postgres service's own default user and the password
+      # set above.
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
     steps:
       - uses: actions/checkout@v4
 

@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 import httpx
 from bs4 import BeautifulSoup
 
-from src.recommendation.lichess_client import LICHESS_BASE_URL, RequestPacer
+from src.recommendation.lichess_client import RequestPacer, default_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,7 @@ def iter_studies_by_sort(
         raise ValueError(f"sort must be one of {sorted(VALID_SORTS)}, got {sort!r}")
 
     owns_client = http_client is None
-    client = http_client or httpx.Client(base_url=LICHESS_BASE_URL, timeout=30.0)
+    client = http_client or default_http_client()
     pacer = pacer or RequestPacer()
     try:
         page = 1
@@ -193,7 +193,7 @@ def fetch_study_chapters(
     the same as "couldn't determine one," not crash the whole request.
     """
     owns_client = http_client is None
-    client = http_client or httpx.Client(base_url=LICHESS_BASE_URL, timeout=30.0)
+    client = http_client or default_http_client()
     pacer = pacer or RequestPacer()
     try:
         pacer.wait()

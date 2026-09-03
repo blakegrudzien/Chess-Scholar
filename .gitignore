@@ -10,16 +10,21 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 
-# node (future JS board component)
+# node (vendored into src/ui/board_component -- jquery/chessboard.js
+# themselves are committed as static assets, not installed via npm, but
+# this stays in case that ever changes)
 node_modules/
 dist/
 
-# data — raw PGN dumps and any personally-owned copyrighted book text
-# never commit these; keep public-domain-only sources if you want data in the repo
+# data — raw PGN dumps, ChessBase annotation exports, and any
+# personally-owned copyrighted book text never commit these; keep
+# public-domain-only sources if you want data in the repo
 data/raw/*
 !data/raw/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+data/annotations/*
+!data/annotations/.gitkeep
 
 # OS
 .DS_Store

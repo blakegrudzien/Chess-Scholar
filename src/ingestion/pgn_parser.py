@@ -6,6 +6,7 @@ import argparse
 import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import chess
@@ -51,11 +52,30 @@ class GameRecord:
     moves: list[MoveRecord] = field(default_factory=list)
 
 
+# Modern chess rules (as opposed to earlier regional variants) date to
+# roughly 1475 -- 1400 is a round, generously early floor that will never
+# false-reject a real historical game while still catching an obviously
+# truncated/malformed header like "202.01.01" (year_str="202", which
+# .isdigit() alone accepts fine, silently becoming year=202 downstream and
+# polluting games.year/chunks.year with a value trend synthesis would
+# treat as legitimate).
+MIN_PLAUSIBLE_YEAR = 1400
+
+
 def parse_year(date_header: str | None) -> int | None:
     if not date_header:
         return None
     year_str = date_header[:4]
-    return int(year_str) if year_str.isdigit() else None
+    if not year_str.isdigit():
+        return None
+    year = int(year_str)
+    # Upper bound computed at call time, not a hardcoded constant that
+    # would need bumping every year (and would reject real recent games
+    # once stale) -- a small future slack (+1) covers a game dated in a
+    # different timezone than wherever this happens to run.
+    if not (MIN_PLAUSIBLE_YEAR <= year <= datetime.now(UTC).year + 1):
+        return None
+    return year
 
 
 def compute_game_id(headers: chess.pgn.Headers, move_sans: list[str]) -> str:
@@ -106,6 +126,24 @@ def parse_game(game: chess.pgn.Game, source: str) -> GameRecord:
 
     board = game.board()
     for ply, move in enumerate(game.mainline_moves(), start=1):
+        # python-chess's PGN parser is lenient about malformed movetext -- a
+        # mainline move can parse fine while still not being legal in the
+        # position actually reached, and board.san() raises an
+        # AssertionError for that internally (observed in practice against
+        # a broader, less-curated slice of scraped PGN -- see
+        # annotation_extractor.py's iter_plies_with_comments, which hit the
+        # identical problem and was fixed the same way). This function is
+        # that bug's untrusted-input-reachable twin: chat.py calls it
+        # directly on a user-uploaded PGN with no legality guarantee at
+        # all, so the fix belongs here too, not just in the batch-ingestion
+        # path. Stop at the first illegal move rather than crash -- a
+        # truncated-but-valid game is a far better outcome than an
+        # unhandled exception. Checked before calling board.san() (which
+        # raises internally for exactly this) rather than catching that
+        # error: an assert is not a contract to depend on -- see
+        # hash_utils.check_no_delimiter's own docstring on the same point.
+        if move not in board.legal_moves:
+            break
         # SAN, capture info, and material delta all depend on the position
         # *before* the move is made, so they must be computed before push().
         move_san = board.san(move)

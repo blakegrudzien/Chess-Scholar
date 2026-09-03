@@ -28,12 +28,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import anthropic
+import httpx
 import psycopg2.pool
 import voyageai
 from anthropic import beta_tool
 
-from src.ingestion.db_loader import get_connection_with_timeout
-from src.recommendation.lichess_client import study_chapter_embed_url
+from src.ingestion.db_loader import query_with_retry
+from src.recommendation.lichess_client import RequestPacer, study_chapter_embed_url
 from src.recommendation.lichess_scraper import fetch_study_chapters
 from src.recommendation.study_search import search_studies
 from src.search.structured_search import (
@@ -113,6 +114,8 @@ def build_tools(
     db_pool: psycopg2.pool.ThreadedConnectionPool,
     voyage_client: voyageai.Client,
     state: _SessionState,
+    http_client: httpx.Client | None = None,
+    pacer: RequestPacer | None = None,
 ) -> list[Callable]:
     @beta_tool
     def search_lichess_studies(query: str) -> str:
@@ -122,11 +125,7 @@ def build_tools(
         Args:
             query: Natural-language description of what to search for.
         """
-        conn = get_connection_with_timeout(db_pool)
-        try:
-            results = search_studies(conn, voyage_client, query, limit=5)
-        finally:
-            db_pool.putconn(conn)
+        results = query_with_retry(db_pool, search_studies, voyage_client, query, limit=5)
         if not results:
             return "No matching studies found."
         for r in results:
@@ -145,7 +144,16 @@ def build_tools(
         Args:
             study_id: A study id from search_lichess_studies results.
         """
-        chapters = fetch_study_chapters(study_id)
+        # http_client/pacer threaded through from recommend_resources, not
+        # left to fetch_study_chapters' own per-call defaults -- this is
+        # the one live, user-facing Lichess call in the whole codebase
+        # that used to skip RequestPacer entirely (a fresh, unpaced
+        # pacer/client was spun up and thrown away every single call), the
+        # opposite of the courtesy the offline scripts already share
+        # correctly. See src.ui.resources.get_lichess_http_client/
+        # get_lichess_pacer for the process-wide instances chat.py passes
+        # in here.
+        chapters = fetch_study_chapters(study_id, http_client=http_client, pacer=pacer)
         if not chapters:
             return f"No chapters found for study {study_id}."
         state.chapters_by_study_id[study_id] = {c.chapter_id: c.name for c in chapters}
@@ -161,11 +169,7 @@ def build_tools(
         Args:
             eco_codes: One or more ECO opening codes to match, e.g. ["B70", "B71"].
         """
-        conn = get_connection_with_timeout(db_pool)
-        try:
-            candidate = select_narrative_game(conn, eco_codes)
-        finally:
-            db_pool.putconn(conn)
+        candidate = query_with_retry(db_pool, select_narrative_game, eco_codes)
         if candidate is None:
             return f"No chessbase game found for ECO code(s) {eco_codes}."
         state.games_by_id[candidate.game_id] = candidate
@@ -216,11 +220,7 @@ def build_tools(
         candidate = state.games_by_id.get(game_id)
         if candidate is None:
             return "Unknown game_id -- look it up with find_chessbase_game first."
-        conn = get_connection_with_timeout(db_pool)
-        try:
-            pgn = game_moves_as_pgn(conn, game_id)
-        finally:
-            db_pool.putconn(conn)
+        pgn = query_with_retry(db_pool, game_moves_as_pgn, game_id)
         if pgn is None:
             return f"Could not load moves for game {game_id}."
         state.recommendations.append(
@@ -249,14 +249,22 @@ def recommend_resources(
     db_pool: psycopg2.pool.ThreadedConnectionPool,
     voyage_client: voyageai.Client,
     client: anthropic.Anthropic | None = None,
+    http_client: httpx.Client | None = None,
+    pacer: RequestPacer | None = None,
 ) -> list[Recommendation]:
     """Decide which, if any, external resources to recommend alongside an
     answer to `question`. Returns an empty list if nothing was relevant
     enough to recommend -- a valid, expected outcome, not a failure.
+
+    http_client/pacer, like client/db_pool/voyage_client, are meant to be
+    the caller's own shared, long-lived instances (see
+    src.ui.resources.get_lichess_http_client/get_lichess_pacer) -- passed
+    through to get_lichess_study_chapters so Lichess request pacing
+    actually accumulates across calls instead of resetting every time.
     """
     client = client or anthropic.Anthropic()
     state = _SessionState()
-    tools = build_tools(db_pool, voyage_client, state)
+    tools = build_tools(db_pool, voyage_client, state, http_client=http_client, pacer=pacer)
 
     runner = client.beta.messages.tool_runner(
         model=MODEL,

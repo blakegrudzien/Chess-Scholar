@@ -21,7 +21,7 @@ import hashlib
 import logging
 import os
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from urllib.parse import urlparse
 
 import psycopg2
@@ -138,6 +138,59 @@ def get_connection_with_timeout(
             time.sleep(DB_POOL_CHECKOUT_POLL_INTERVAL_SECONDS)
 
 
+DB_RETRYABLE_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
+
+# Original attempt plus one retry on a dropped connection. Named rather than
+# inlined as a bare 2, so the retry budget is a single, intentional value
+# instead of a number a reader has to infer the meaning of.
+MAX_QUERY_ATTEMPTS = 2
+
+
+def query_with_retry(db_pool: psycopg2.pool.ThreadedConnectionPool, fn: Callable, *args, **kwargs):
+    """Run fn(conn, *args, **kwargs) with a connection checked out of
+    db_pool, retrying once on a dropped connection (Neon closes idle
+    connections in practice) instead of failing the first caller unlucky
+    enough to hit one. On success or a non-retryable error, the connection
+    is returned to the pool normally; on a retryable error it's discarded
+    (close=True) rather than returned, since a connection that just failed
+    isn't healthy for the next caller to draw either.
+
+    Originally lived as a closure inside chess_agent.build_tools -- pulled
+    out here once src.recommendation.pipeline's DB-backed tools turned out
+    to need the identical behavior (a plain try/finally there was silently
+    returning dead connections to the shared, process-wide pool for the
+    next caller, possibly a different user's session, to fail on too) and
+    duplicating the retry loop a second time would have meant fixing this
+    same class of bug twice.
+    """
+    conn = get_connection_with_timeout(db_pool)
+    for attempt in range(MAX_QUERY_ATTEMPTS):
+        try:
+            result = fn(conn, *args, **kwargs)
+        except DB_RETRYABLE_ERRORS:
+            db_pool.putconn(conn, close=True)
+            if attempt == MAX_QUERY_ATTEMPTS - 1:
+                raise
+            conn = get_connection_with_timeout(db_pool)
+            continue
+        except Exception:
+            # Not a connection problem, so the connection itself is still
+            # healthy: return it normally before letting the caller's
+            # error (e.g. a bad argument) propagate.
+            db_pool.putconn(conn)
+            raise
+        else:
+            db_pool.putconn(conn)
+            return result
+    # Every iteration above ends in return or raise (the last attempt's
+    # except clause always raises instead of looping again), so this is
+    # unreachable. Stated explicitly rather than left as an implicit gap:
+    # it tells a type checker (and a future reader who changes
+    # MAX_QUERY_ATTEMPTS) that falling out of the loop is a bug, not a
+    # valid path returning None.
+    raise AssertionError("unreachable: every query_with_retry attempt returns or raises")
+
+
 def load_games(
     games: Iterable[GameRecord], conn: psycopg2.extensions.connection
 ) -> tuple[int, int]:
@@ -219,9 +272,26 @@ def _chunk_hash(chunk: AnnotationChunk) -> str:
 def load_chunks(chunks: Iterable[AnnotationChunk], conn: psycopg2.extensions.connection) -> int:
     """Insert annotation/book chunks, flushing every CHUNKS_BATCH_SIZE chunks.
     Returns the number of rows actually inserted (rows skipped by ON CONFLICT
-    don't count).
+    don't count, and neither do rows skipped for a missing year -- see below).
+
+    chunks.year is NOT NULL (scripts/init_db.sql, "required for trend
+    synthesis, do not skip") -- but AnnotationChunk.year is `int | None`,
+    because pgn_parser.parse_year legitimately returns None for a header
+    ChessBase itself writes when a game's date is unknown
+    ("????.??.??" is ChessBase's own placeholder, not malformed data).
+    That's routine in a real export, not a corner case: without a filter
+    here, the first such chunk aborts the whole in-flight transaction
+    (a NOT NULL violation kills it, and CHUNKS_BATCH_SIZE=5000 chunks can
+    be sitting unflushed at that point), silently discarding every chunk
+    since the last commit, not just the bad one. Skipping (and counting)
+    undated chunks keeps the schema's real invariant intact -- every row
+    that lands in the table still has a trustworthy year -- rather than
+    weakening the constraint to NULL-able and pushing the "is this year
+    trustworthy" question onto every future reader of the table, trend
+    synthesis included.
     """
     chunks_inserted = 0
+    chunks_skipped_missing_year = 0
     rows: list[tuple] = []
 
     def flush() -> None:
@@ -234,6 +304,9 @@ def load_chunks(chunks: Iterable[AnnotationChunk], conn: psycopg2.extensions.con
         rows = []
 
     for chunk in chunks:
+        if chunk.year is None:
+            chunks_skipped_missing_year += 1
+            continue
         rows.append(
             (
                 _chunk_hash(chunk),
@@ -251,6 +324,11 @@ def load_chunks(chunks: Iterable[AnnotationChunk], conn: psycopg2.extensions.con
             flush()
 
     flush()  # remaining partial batch
+    if chunks_skipped_missing_year:
+        logger.warning(
+            "Skipped %d chunk(s) with no determinable year (chunks.year is NOT NULL)",
+            chunks_skipped_missing_year,
+        )
     return chunks_inserted
 
 

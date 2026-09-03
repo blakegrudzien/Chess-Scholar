@@ -14,11 +14,14 @@ actual job at inference time -- a textbook train/serve skew, avoided by
 excluding it up front rather than filtering it out later.
 
 Classical ML (logistic regression, gradient-boosted trees), not anything
-deep: the labeled set here is small -- around 140 examples after excluding
-narrative and skips -- hand-labeled by one person. Model capacity should
-track the data available, not the data one might wish for; a small,
-regularized classical model is the amount of capacity ~140 examples can
-actually support without just memorizing them.
+deep: the labeled set here is small -- on the order of a couple hundred
+examples after excluding narrative and skips (see models/quality_classifier.
+meta.json's n_examples for the exact count behind the currently-committed
+model, not a number here that goes stale as more labels get added) --
+hand-labeled by one person. Model capacity should track the data available,
+not the data one might wish for; a small, regularized classical model is the
+amount of capacity this little data can actually support without just
+memorizing it.
 """
 
 from __future__ import annotations
@@ -81,6 +84,12 @@ _PASSTHROUGH_INDICES = [i for i in range(len(FEATURE_NAMES)) if i not in _LOG_TR
 MIN_GROUP_SIZE_FOR_METRICS = 10
 MIN_MINORITY_CLASS_SIZE_FOR_METRICS = 5
 
+# The classifier's decision boundary -- study_index.is_eligible_for_
+# recommendation uses this exact same value for its own quality gate
+# (imported from here, not re-declared) so the two were never independently
+# tunable literals kept in sync only by a comment asking nicely.
+DEFAULT_QUALITY_THRESHOLD = 0.5
+
 
 @dataclass(frozen=True)
 class LabeledExample:
@@ -113,7 +122,14 @@ def load_labeled_dataset(
                 continue
             if label["genre"] not in genres:
                 continue
-            candidate = candidates_by_id[label["study_id"]]
+            candidate = candidates_by_id.get(label["study_id"])
+            if candidate is None:
+                raise ValueError(
+                    f"study_labels.jsonl references study_id "
+                    f"{label['study_id']!r}, which isn't in {candidates_path} -- "
+                    "a stale labels file, a hand-edited candidates file, or the "
+                    "wrong path was passed?"
+                )
             examples.append(
                 LabeledExample(
                     features=extract_features(candidate),
@@ -183,7 +199,9 @@ class Metrics:
     roc_auc: float | None
 
 
-def compute_metrics(y_true: np.ndarray, y_proba: np.ndarray, *, threshold: float = 0.5) -> Metrics:
+def compute_metrics(
+    y_true: np.ndarray, y_proba: np.ndarray, *, threshold: float = DEFAULT_QUALITY_THRESHOLD
+) -> Metrics:
     y_pred = (y_proba >= threshold).astype(int)
     n_positive = int(y_true.sum())
     # ROC-AUC is undefined with only one class present in y_true.
