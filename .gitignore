@@ -35,4 +35,6 @@ ideas.txt
 
 .agents/skills
 
+.claude/skills/*
+
 skills-lock.json

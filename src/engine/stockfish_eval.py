@@ -17,6 +17,18 @@ from dotenv import load_dotenv
 
 DEFAULT_DEPTH = 18
 
+# The agent exposes `depth` as a tool argument the model sets from free-text
+# conversation (see chess_agent.evaluate_chess_position/compare_candidate_
+# moves), and this app has no auth -- an unusually deep request would pin a
+# CPU core for a long time on a deployment-wide pool of only
+# src.ui.resources.ENGINE_POOL_SIZE engines. Clamped here, not at the tool
+# layer, so every caller of evaluate_position (both agent tools, plus
+# evaluate_game) gets the same ceiling regardless of what depth it was asked
+# for. 24 is comfortably past DEFAULT_DEPTH's 18 -- room for a caller that
+# genuinely wants a deeper look -- while still bounding worst-case search
+# time to a reasonable few seconds on typical positions.
+MAX_DEPTH = 24
+
 # Centipawn-loss thresholds for classify_move, from the mover's perspective.
 BLUNDER_THRESHOLD = 200
 MISTAKE_THRESHOLD = 100
@@ -54,7 +66,7 @@ def evaluate_position(
     engine: chess.engine.SimpleEngine, board: chess.Board, depth: int = DEFAULT_DEPTH
 ) -> PositionEval:
     """Evaluate `board` from the side-to-move's perspective."""
-    info = engine.analyse(board, chess.engine.Limit(depth=depth))
+    info = engine.analyse(board, chess.engine.Limit(depth=min(depth, MAX_DEPTH)))
     score = info["score"].pov(board.turn)
 
     pv_board = board.copy()

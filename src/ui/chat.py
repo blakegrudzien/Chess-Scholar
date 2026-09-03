@@ -784,6 +784,14 @@ def _attempt_move(source: str, target: str) -> None:
     used to work but for a one-shot from/to pair instead of two separate
     clicks. Falls back to auto-queen promotion, same as before.
 
+    source/target come back from chess_board() as plain strings the custom
+    component's own JS chose to send -- in normal use always a real drag's
+    two algebraic squares, but nothing on the Python side enforces that
+    shape, so a malformed pair (not a legal chess.Move.from_uci input at
+    all, as opposed to merely an illegal move) must be handled the same
+    honest way as any other illegal drop instead of raising InvalidMoveError
+    straight through to Streamlit's default full-traceback error page.
+
     Always bumps board_generation, including on rejection: an illegal drop
     leaves board.fen() textually identical to what it was before the drop,
     so without a distinct generation value the component has no signal that
@@ -791,10 +799,13 @@ def _attempt_move(source: str, target: str) -> None:
     docstring for why this is required, not just belt-and-suspenders.
     """
     board: chess.Board = st.session_state.board
-    move = chess.Move.from_uci(source + target)
-    if move not in board.legal_moves:
-        move = chess.Move.from_uci(source + target + "q")
-    if move in board.legal_moves:
+    try:
+        move = chess.Move.from_uci(source + target)
+        if move not in board.legal_moves:
+            move = chess.Move.from_uci(source + target + "q")
+    except chess.InvalidMoveError:
+        move = None
+    if move is not None and move in board.legal_moves:
         board.push(move)
         st.session_state.last_illegal_attempt = None
     else:
