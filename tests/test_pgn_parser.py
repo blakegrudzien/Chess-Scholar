@@ -136,6 +136,47 @@ def test_parse_game_stops_at_the_first_illegal_move_instead_of_crashing():
     assert [m.move_san for m in record.moves] == ["e4", "e5"]
 
 
+def test_parse_game_truncates_at_threefold_repetition_when_requested():
+    """Regression test for the upload-path DoS fix: an untrusted PGN can
+    shuffle pieces back and forth indefinitely without ever making an
+    illegal move, so the "stop at the first illegal move" guard above
+    doesn't bound it. truncate_at_repetition=True stops recording moves
+    once a position has occurred a third time, the same point real chess
+    rules let a player claim a draw -- off by default so real historical
+    games that play on past a repeated position aren't truncated during
+    corpus ingestion (see parse_game's own docstring).
+    """
+    game = chess.pgn.Game()
+    node = game
+    # Nf3 Nf6 Ng1 Ng8, three times over: the starting position recurs after
+    # every 4-ply cycle (count 1 at the start, 2 after the first cycle, 3
+    # after the second) -- so this should stop after 8 plies, well before
+    # the 12 offered here.
+    cycle = ["g1f3", "g8f6", "f3g1", "f6g8"]
+    for uci in cycle * 3:
+        node = node.add_variation(chess.Move.from_uci(uci))
+
+    record = parse_game(game, source="user_upload", truncate_at_repetition=True)
+
+    assert [m.move_san for m in record.moves] == ["Nf3", "Nf6", "Ng1", "Ng8"] * 2
+
+
+def test_parse_game_does_not_truncate_at_repetition_by_default():
+    """The corpus-ingestion default: a real game can play on past a
+    repeated position (the draw is claimable, not automatic), so this must
+    not silently drop moves unless a caller opts in.
+    """
+    game = chess.pgn.Game()
+    node = game
+    cycle = ["g1f3", "g8f6", "f3g1", "f6g8"]
+    for uci in cycle * 3:
+        node = node.add_variation(chess.Move.from_uci(uci))
+
+    record = parse_game(game, source="lichess")
+
+    assert len(record.moves) == 12
+
+
 def test_parse_year_accepts_a_normal_date():
     assert parse_year("1995.03.10") == 1995
 

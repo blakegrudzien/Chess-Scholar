@@ -9,14 +9,11 @@ implies.
 
 isolate_styles=False is required, not a style choice: chessboard.js uses
 jQuery ID-based lookups (`$("#" + squareId)`) against the *document* to
-manage its own square/piece elements internally. Those lookups can't reach
-inside a Shadow DOM, which is what isolate_styles=True (the component
-default) would mount this in -- confirmed by reading chessboard.js's own
-vendored source before wiring this up, not assumed. The tradeoff is that
-chessboard.js's CSS (loaded via the css= string below) applies to the whole
-page rather than being sandboxed to just this component; its class names
-already carry library-generated hash suffixes (e.g. "board-b72b1"), making a
-collision with this app's own CSS unlikely.
+manage its own square/piece elements, which can't reach inside a Shadow DOM
+(isolate_styles=True, the component default). The tradeoff is that
+chessboard.js's CSS applies to the whole page rather than being sandboxed to
+this component; its class names carry library-generated hash suffixes
+(e.g. "board-b72b1"), making a collision with this app's own CSS unlikely.
 """
 
 from __future__ import annotations
@@ -88,24 +85,20 @@ def chess_board(
 ) -> dict[str, str] | None:
     """Render a board at `fen`. Returns {"from": sq, "to": sq} for the drop
     that just happened, or None if nothing new was dropped since the last
-    script run -- "drop" is a trigger value (see wiring.js), so it resets
-    to None automatically after one rerun rather than replaying.
+    script run -- "drop" is a Streamlit trigger value (see wiring.js), so it
+    resets to None automatically after one rerun rather than replaying.
 
     `generation` must change on every call where the board should visually
-    re-sync, independent of whether `fen` itself changed. An illegal drop is
-    the reason this exists: chessboard.js optimistically shows the piece at
-    the dropped square, but when python-chess rejects the move,
-    st.session_state.board -- and therefore `fen` -- is exactly what it was
-    *before* the drop, so nothing about `data` would otherwise differ from
-    the previous call. Without a distinct generation value, this component
-    has no signal to re-render, and the piece is left stuck at the illegal
-    square instead of snapping back. See chat.py's board_generation counter.
+    re-sync, independent of whether `fen` changed. Needed for an illegal
+    drop: chessboard.js optimistically shows the piece at the dropped
+    square, but a rejected move leaves `fen` exactly what it was before the
+    drop, so `data` wouldn't otherwise differ and the component would have
+    no signal to snap the piece back (see chat.py's board_generation
+    counter).
 
-    draggable=False renders a read-only board (used while stepping through
-    a recommended game's move path in chat.py) -- threaded straight into
-    chessboard.js's own native `draggable` config option; confirmed in its
-    vendored source that onDrop never fires when this is False, so no
-    separate guard is needed on the JS side. The Python caller should still
+    draggable=False renders a read-only board (used during game replay in
+    chat.py), threaded straight into chessboard.js's own `draggable` option
+    -- onDrop never fires when it's False. The Python caller should still
     check its own replay-vs-free-play state before acting on a drop too,
     defense in depth rather than trusting a single layer.
     """

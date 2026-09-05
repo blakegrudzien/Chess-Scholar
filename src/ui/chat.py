@@ -140,82 +140,39 @@ def ask_with_status(
     question: str, *, history: list[dict[str, str]] | None = None
 ) -> tuple[str, list[tuple[str, str | None]]]:
     """Run ask_agent, showing each tool-calling step live in an st.status
-    panel and streaming the final answer into view as it is generated,
-    rather than a blank spinner followed by the whole answer appearing at
-    once. Once the answer is complete, replaces the streamed plain text
-    with the same text interleaved with any position diagrams it
-    references (see _render_answer_content) -- so this renders everything
-    itself, and callers should not render `answer` or its diagrams again
-    afterward.
+    panel and streaming the final answer into view as it generates, rather
+    than a blank spinner followed by the whole answer appearing at once.
+    Renders everything itself, diagrams included (see _render_answer_content)
+    -- callers should not render `answer` again afterward.
 
-    history, if given, is prior turns the model should have context on --
-    see _build_message_history and ask()'s own docstring. Without it, this
-    call has no memory of anything asked earlier in the session.
+    history, if given, is prior turns for the model's context -- see
+    _build_message_history.
 
-    Returns (answer, touched_fens) -- touched_fens is every distinct
-    (fen, label) pair on_position reported during this call (immediate
-    repeat fens deduped), in the order they came up. label is None except
-    for show_opening_line's calls. Sourced from any tool call that touches
-    a real, verified position -- evaluate_chess_position, find_similar_
-    corpus_games's top match, and show_opening_line's replayed sequence
-    (see chess_agent.build_tools's on_position docstring for why each
-    needs its own plumbing). Returned only so a caller can store it in
-    chat_history for history replay -- already rendered here, not meant
-    to be rendered again.
+    Returns (answer, touched_fens): every distinct (fen, label) pair
+    on_position reported during this call, in order (immediate repeats
+    deduped). label is None except for show_opening_line's calls. Returned
+    only so a caller can store it in chat_history for history replay --
+    already rendered here, not meant to be rendered again.
 
-    A tool-calling turn and the final answer both start with plain text
-    (the system prompt asks for a one-sentence rationale before every tool
-    call), and the only way to tell them apart is whether a tool_use block
-    shows up by the end of that turn -- so every turn's text streams into
-    preview_area first, live-typed the same way regardless of which one
-    this will turn out to be. preview_area is nested inside the status box
-    itself (see its own creation below), not a sibling of it -- a real,
-    reported bug: it used to be a plain top-level placeholder rendered
-    below the "Thinking..." box, so a turn's rationale visibly streamed in
-    unboxed first and then, once on_step ran, jumped into the box as a
-    status line -- the same text appearing to relocate itself the moment a
-    tool call was confirmed. Nesting the live preview inside the box from
-    the start means a tool-call turn's text was "inside the box" the whole
-    time; on_step just promotes it to a permanent status.write() line and
-    clears the preview for the next turn, both still inside the same box,
-    so nothing visibly jumps. If a turn turns out to be the final answer
-    instead, its completed text is copied out to final_area -- a separate,
-    unboxed placeholder declared outside the status box, matching how
-    every other historical message renders (see render_main_screen's own
-    chat_history loop) -- only once ask_agent returns and that's certain,
-    not live during typing.
-
-    Each delta is re-split into word-sized pieces and revealed one at a
-    time with a short pause between them (see STREAM_WORD_DELAY_SECONDS),
-    rather than written all at once -- the raw deltas from the API arrive
-    in clause-or-sentence-sized pieces, so writing them straight through
-    looks like it is appearing in chunks rather than being typed. Only the
-    first MAX_PACED_WORDS_PER_TURN words of any one turn get this treatment;
-    past that, text still appears immediately (no delay), just not word by
-    word -- a long final answer (or a multi-tool-call question's several
-    rationale turns, each discarded a moment later anyway) shouldn't pay
-    linear-in-length artificial delay on top of already-real generation and
-    tool-call latency.
-
-    The stop button doesn't need explicit click handling: Streamlit treats
-    interactions as implicit yield points during a running script, so any
-    click while this is in progress interrupts it at the next word reveal.
-
-    Declared after the status box, not before it -- a real, reported bug:
-    message_panel autoscrolls to follow new content as it streams in (see
-    render_main_screen), and a placeholder's position in the DOM is fixed
-    at the point it's created, not where its content later fills in. With
-    the button declared first, it stayed pinned above the streamed text,
-    so a long answer scrolled it out of view above the fold right when a
-    user most wants to reach it. Declaring it after the status box puts it
-    right below the growing preview instead, exactly where autoscroll
-    already keeps the view anchored. final_area is declared last, after
-    the button -- it renders nothing until the very end (see below), so it
-    never affects the button's position while a turn is in progress.
+    The stop button needs no explicit click handling: Streamlit treats
+    interactions as implicit yield points during a running script, so a
+    click interrupts this at the next word reveal.
     """
     status = st.status("Thinking...", expanded=True)
     with status:
+        # Nested inside the status box, not a sibling of it: a tool-calling
+        # turn's rationale and the eventual final answer both start out as
+        # plain streamed text (nothing distinguishes them until a tool_use
+        # block does or doesn't show up at the end of the turn), so on_step
+        # below only has to promote this preview to a permanent
+        # status.write() line -- a real, reported bug when this was a
+        # top-level placeholder instead: a turn's text visibly jumped into
+        # the box the moment a tool call was confirmed.
         preview_area = st.empty()
+    # Declared after the status box: message_panel autoscrolls to follow
+    # streamed content, and a placeholder's DOM position is fixed at
+    # creation time -- declared first, this stayed pinned above the
+    # streamed text and scrolled out of view on a long answer.
     stop_placeholder = st.empty()
     stop_placeholder.button("Stop generating", key="stop_generating")
     final_area = st.empty()
@@ -246,22 +203,15 @@ def ask_with_status(
         preview_area.empty()
 
     def on_position(fen: str, *, label: str | None = None, update_board: bool = True) -> None:
-        # and game_path is None: while replaying a recommended game,
-        # st.session_state.board is the free-play board sitting *behind*
-        # the replay, invisible but still live -- without this guard, an
-        # Evaluate/Ask-position call made against a replay ply (or any
-        # other tool call the model makes that turn, e.g.
-        # find_similar_corpus_games reporting an unrelated game's
-        # position) would silently overwrite it the moment on_position
-        # fires, corrupting it with no visible symptom until the user
-        # exits replay and finds their game changed underneath them.
+        # `and game_path is None`: during replay, st.session_state.board is
+        # the free-play board sitting *behind* the visible replay, invisible
+        # but still live -- without this guard it would get silently
+        # overwritten by any position-touching tool call that turn.
         if update_board and st.session_state.game_path is None:
             try:
                 new_board = chess.Board(fen)
             except ValueError:
-                return  # the model can pass a malformed FEN to the tool call
-                # even though evaluate_chess_position's own validation later
-                # rejects it for that turn -- leave the displayed board as it was.
+                return  # a malformed FEN from the model -- leave the board as it was
             st.session_state.board = new_board
             # A fresh chess.Board(fen) has no move history, so an illegal-move
             # warning from before this update no longer corresponds to
@@ -279,27 +229,19 @@ def ask_with_status(
             question, on_step=on_step, on_chunk=on_chunk, on_position=on_position, history=history
         )
     except anthropic.APIError:
-        # Covers every real network/API failure mode (rate limit, timeout,
-        # connection drop, a transient 5xx/overloaded error from Anthropic
-        # itself) -- none of this was caught anywhere before. tool_runner
-        # only catches exceptions a *tool* raises (see build_tools' own
-        # docstring); the SDK's own calls to Anthropic sit outside that,
-        # so this used to propagate all the way up as a raw, unhandled
-        # exception, crashing the whole Streamlit script mid-answer.
-        # logger.exception, not just logger.error: this is a real failure
-        # worth a full traceback in the logs, not just a one-line note.
+        # Covers rate limits, timeouts, dropped connections, and transient
+        # 5xx/overloaded errors -- tool_runner only catches exceptions a
+        # *tool* raises (see build_tools' own docstring), so a failure in
+        # the SDK's own calls to Anthropic would otherwise crash the whole
+        # Streamlit script mid-answer.
         logger.exception("ask_agent failed")
         answer = ""
 
     if not answer.strip():
         # The tool-calling loop can end on a turn whose only content was a
-        # tool call (see chess_agent.ask()'s docstring on how final_text is
-        # tracked) -- rare, but when it happens the chat bubble would
-        # otherwise render nothing at all with no indication anything went
-        # wrong. A short, honest placeholder beats silence. Also the
-        # fallback for the API-error case just above: an empty answer
-        # already has well-tested, working UI for "let the user know and
-        # let them retry" -- no need for a second, parallel message.
+        # tool call (rare -- see chess_agent.ask()'s docstring), which would
+        # otherwise render an empty chat bubble with no indication anything
+        # went wrong. Also doubles as the API-error fallback above.
         answer = (
             "Something interrupted this response before it finished -- "
             "try asking again, possibly with a narrower question."
@@ -324,36 +266,26 @@ def ask_with_status(
 
 def _render_resource_recommendations() -> None:
     """Offers to look up related Lichess studies and corpus games for the
-    most recent question, and renders whatever comes back.
+    most recent question, and renders whatever comes back. Only shown for
+    the latest exchange, not every past one in the history.
 
-    Only ever shown for the latest exchange, not every past one in the
-    history -- keeps the UI focused on what is actually in view rather than
-    accumulating a lookup button per message.
-
-    The button itself always renders, even on a fresh page with no
-    conversation yet -- disabled rather than absent, so it's a visible
-    preview of a feature ("try this once you've asked something") instead
-    of UI that pops into existence with no warning partway through a
-    session. This is also what makes it a viable tutorial_overlay target:
-    an element that only exists conditionally can't be reliably spotlighted
-    from a fresh page, where the tour is most likely to be opened.
+    The button always renders, even on a fresh page -- disabled rather than
+    absent, both as a visible preview of the feature and so it's a stable
+    tutorial_overlay spotlight target (a conditionally-existing element
+    can't be reliably spotlighted from a fresh page).
 
     st.session_state.resource_recommendations is the sentinel for "already
-    looked up this question": None means not yet requested (show the
-    button), a list (possibly empty, meaning nothing was relevant) means it
-    has been. Reset to None right after a new answer is appended in
-    _submit_question, so a fresh question always gets a fresh button.
+    looked up this question": None means not yet requested, a list (possibly
+    empty) means it has been. Reset to None in _submit_question after a new
+    answer, so a fresh question always gets a fresh button.
     """
     history = st.session_state.chat_history
     eligible = len(history) >= 2 and history[-1][0] == "assistant"
 
     if st.session_state.resource_recommendations is None:
-        # secondary, not primary -- "Evaluate this position with Stockfish"
-        # is the page's one primary action; two competing primary-styled
-        # buttons dilute the visual hierarchy that color is supposed to
-        # establish (Refactoring UI's "distinguish an interface's actions
-        # by importance" principle -- one dominant action per view, not
-        # several equally loud ones).
+        # secondary, not primary: "Evaluate this position with Stockfish" is
+        # the page's one primary action -- two competing primary-styled
+        # buttons would dilute that visual hierarchy.
         clicked = st.button(
             "Find related resources",
             key="find_resources",
@@ -366,16 +298,11 @@ def _render_resource_recommendations() -> None:
         if not clicked:
             return
         question = history[-2][1]
-        # Doherty threshold: this call runs a multi-step tool-calling loop
-        # and regularly takes 20+ seconds in practice, past the point where
-        # a bare spinner keeps people's attention -- a status panel with a
-        # task description is the book's own prescribed pattern for waits
-        # this long, matching the same visual language ask_with_status
-        # already uses for the chat agent. This version isn't wired to the
-        # pipeline's actual step-by-step tool calls the way the chat one is
-        # (that would mean threading on_step callbacks through
-        # recommend_resources itself); it's a static but honest description
-        # of the stages involved, not live progress.
+        # Doherty threshold: this regularly takes 20+ seconds, past the
+        # point where a bare spinner keeps people's attention. A static but
+        # honest description of the stages involved, not live progress --
+        # unlike ask_with_status, this isn't wired to recommend_resources'
+        # actual tool calls via on_step.
         with st.status("Looking for related resources...", expanded=True) as status:
             status.write("Searching the study library for relevant chapters.")
             status.write("Checking whether a matching master game exists in the corpus.")
@@ -389,15 +316,11 @@ def _render_resource_recommendations() -> None:
                     pacer=get_lichess_pacer(),
                 )
             except anthropic.APIError:
-                # Same unguarded-API-call gap as ask_with_status's call to
-                # ask_agent (see that fix's own comment) -- this call
-                # chains Anthropic + Voyage + live Lichess HTTP behind one
-                # click with nothing catching a failure in any of them.
-                # Left inside the `with` block (not wrapped around it) so
-                # `status` is still live to update here, and resource_
-                # recommendations stays None -- the button reappears on
-                # the next rerun instead of wrongly claiming nothing was
-                # found.
+                # This call chains Anthropic + Voyage + live Lichess HTTP
+                # behind one click; caught here (inside the `with`, so
+                # `status` is still live to update) rather than around it,
+                # so resource_recommendations stays None and the button
+                # reappears on the next rerun.
                 logger.exception("recommend_resources failed")
                 status.update(
                     label="Something went wrong looking that up. Try again in a moment.",
@@ -492,7 +415,15 @@ def _describe_uploaded_game(uploaded_file, user_text: str) -> str | None:
         # the generator: the first to use, and a second only to learn
         # whether there's more than one, without fully parsing an upload
         # (untrusted input) that could contain a large number of games.
-        first_two_games = list(itertools.islice(parse_pgn(tmp_path, source="user_upload"), 2))
+        # truncate_at_repetition bounds a single game's move count too --
+        # otherwise an adversarial upload (e.g. two pieces shuffled back
+        # and forth) could inflate move_sans below into an arbitrarily
+        # long, expensive prompt with no cap at all.
+        first_two_games = list(
+            itertools.islice(
+                parse_pgn(tmp_path, source="user_upload", truncate_at_repetition=True), 2
+            )
+        )
     except ValueError:
         # compute_game_id (parse_pgn -> parse_game -> compute_game_id)
         # deliberately raises ValueError if a header contains ID_DELIMITER
@@ -722,29 +653,17 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
 
 def _render_example_prompts() -> None:
     """Shown only on an empty conversation (render_main_screen checks
-    chat_history before calling this) -- teaches the chat's actual range
-    by demonstration, one example per layer/feature, the way ChatGPT/
-    Claude.ai/Gemini all show suggested prompts on a fresh conversation,
-    rather than by upfront explanation (see the "How this works" spotlight
-    tour, app.py's render_tutorial_trigger, for that). Clicking one submits
-    it, the same as typing it and pressing enter would.
+    chat_history before calling this) -- teaches the chat's actual range by
+    demonstration, one example per layer/feature. Clicking one submits it,
+    the same as typing it and pressing enter would.
 
     Stashes into st.session_state.pending_question and reruns rather than
-    calling _submit_question directly -- a real, reproduced bug: this
-    function is called from inside the `if not st.session_state.
-    chat_history:` branch in render_main_screen, *before* that same
-    script run's `for ... in st.session_state.chat_history:` loop below
-    it. Calling _submit_question inline here mutates and renders the new
-    question/answer pair on the spot, and then the loop right after
-    renders that same now-nonempty chat_history all over again, in the
-    same run -- every message doubled, plus the example buttons still
-    visible above them since the `if not chat_history` check had already
-    committed to true for this run. Stashing and rerunning, the same
-    pattern _render_board_panel's own triggers already use for the
-    identical reason (see that function's docstring), lets a fresh script
-    run make the correct decision: chat_history is non-empty from the
-    start, so this function is skipped entirely and the loop renders the
-    new pair exactly once.
+    calling _submit_question directly: this runs *before* render_main_
+    screen's chat_history loop in the same script pass, so submitting
+    inline here would render the new pair once from this call and again
+    from that loop right after -- every message doubled. Rerunning lets a
+    fresh pass see chat_history as already non-empty, so this function is
+    skipped and the loop renders the new pair exactly once.
     """
     st.caption("Try asking:")
     examples = [
@@ -909,34 +828,25 @@ def _render_board_panel() -> None:
     """The board column: a draggable board reflecting the position under
     discussion, plus a quick-eval button, Reset/Undo, and a free-text
     "ask about this position" form -- or, while replaying a recommended
-    game (st.session_state.game_path is not None; see
-    _render_resource_recommendations' "Play through this game" button), a
-    read-only board stepping through that game's moves instead, with
-    Evaluate/Ask-position operating on whatever ply is currently shown.
+    game (st.session_state.game_path is not None), a read-only board
+    stepping through that game's moves instead, with Evaluate/Ask-position
+    operating on whatever ply is currently shown.
 
-    Optimistic UI, no client-side legality check (see board_component's own
-    docstring): chess_board() lets a drop land wherever it was dropped, and
-    _attempt_move validates it here against python-chess. An illegal drop
-    leaves st.session_state.board unchanged, so the next render's `data`
-    (the still-unmoved FEN) reverts the piece visually via chessboard.js's
-    own diffing -- no explicit snapback handling needed on either side.
-    Disabled entirely during replay (draggable=False) rather than left on
-    and silently ignored: _attempt_move mutates st.session_state.board
-    unconditionally, which during replay is the free-play board sitting
-    *behind* the visible replay position, not a copy -- a drag left enabled
-    there would corrupt it invisibly while the piece you actually see just
-    snaps back with no feedback at all.
-
-    chess_board() only ever returns a given drop once -- it's a Streamlit
-    "trigger" value, documented as transient (resets to None after one
-    script run), unlike the older declare_component API's return values,
-    which persist until explicitly replaced. No dedup bookkeeping needed.
+    Optimistic UI, no client-side legality check: chess_board() lets a drop
+    land wherever dropped, and _attempt_move validates it against
+    python-chess. An illegal drop leaves st.session_state.board unchanged,
+    so the next render's still-unmoved `data` reverts the piece visually via
+    chessboard.js's own diffing. Dragging is disabled entirely during replay
+    (draggable=False) rather than left on and silently ignored: during
+    replay, st.session_state.board is the free-play board sitting *behind*
+    the visible replay position, not a copy -- a drag left enabled there
+    would corrupt it invisibly.
 
     Neither button below calls ask_with_status directly -- both stash a
     (question, fen) pair in st.session_state.pending_question and
-    st.rerun() instead, so the actual submission (and its live status/
-    streaming UI) happens from inside chat_col on the next script pass, not
-    in this narrow column. See _submit_question's docstring for why.
+    st.rerun() instead, so the actual submission happens from inside
+    chat_col on the next script pass, not in this narrow column (see
+    _submit_question's docstring).
     """
     replaying = st.session_state.game_path is not None
     if replaying:
@@ -949,23 +859,11 @@ def _render_board_panel() -> None:
         current_board = st.session_state.board
 
     # Turn/FEN/Reset/Undo (or, during replay, the ply label and Prev/Next)
-    # sit beside the board rather than stacked below it -- purely a height
-    # trade: board_col was running much taller than chat_col (usually
-    # near-empty until a conversation starts), and moving these compact,
-    # low-priority controls beside the board instead of under it closes
-    # most of that gap. The Evaluate button and the ask form stay
-    # full-width below both -- those are the primary actions, not
-    # incidental status/controls, and read better as one wide row each
-    # than squeezed into this side column too.
-    #
-    # [5, 2], not [3, 2] -- chess_board()'s size=340 below is a floor, not
-    # a target: chessboard.js fills its container when there's more than
-    # 340px to give it, but never shrinks under that regardless of how
-    # little room board_display_col actually has. [3, 2] passed that floor
-    # at a 14" MacBook's own default width (confirmed live: a 28px real
-    # overflow into controls_col, not just a tight fit) despite looking
-    # fine at the wider viewports actually tested at the time -- [5, 2]
-    # keeps real margin above 340px at that narrower width too.
+    # sit beside the board rather than stacked below it, to close the height
+    # gap between board_col and chat_col. [5, 2], not [3, 2]: chess_board()'s
+    # size=340 is a floor chessboard.js never shrinks below regardless of
+    # container width, and [3, 2] overflowed it at a 14" MacBook's default
+    # width (confirmed live).
     board_display_col, controls_col = st.columns([5, 2])
 
     with board_display_col:

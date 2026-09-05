@@ -91,7 +91,23 @@ class EnginePool:
             # EngineBusyError's own message above) stays true rather than
             # silently shrinking by one every time this happens.
             logger.warning("Engine process terminated during use; respawning a replacement.")
-            self._available.put(chess.engine.SimpleEngine.popen_uci(self._engine_path))
+            try:
+                self._available.put(chess.engine.SimpleEngine.popen_uci(self._engine_path))
+            except Exception:
+                # A failed respawn is worse than the crash that triggered it:
+                # nothing goes back into _available, so the pool's real
+                # capacity is now permanently one below self.size (still
+                # quoted as the full size in EngineBusyError's message
+                # above) until the process restarts, with no other signal
+                # that this happened. ERROR, not WARNING -- this is a
+                # standing capacity loss for the rest of the process
+                # lifetime, not a one-off recovered hiccup.
+                logger.error(
+                    "Failed to respawn a replacement engine after a crash -- "
+                    "pool capacity permanently reduced by one (of %d) until the "
+                    "process restarts.",
+                    self.size,
+                )
             raise
         except Exception:
             # Not an engine-health problem (a bad argument, a bug in the

@@ -155,13 +155,8 @@ def query_with_retry(db_pool: psycopg2.pool.ThreadedConnectionPool, fn: Callable
     (close=True) rather than returned, since a connection that just failed
     isn't healthy for the next caller to draw either.
 
-    Originally lived as a closure inside chess_agent.build_tools -- pulled
-    out here once src.recommendation.pipeline's DB-backed tools turned out
-    to need the identical behavior (a plain try/finally there was silently
-    returning dead connections to the shared, process-wide pool for the
-    next caller, possibly a different user's session, to fail on too) and
-    duplicating the retry loop a second time would have meant fixing this
-    same class of bug twice.
+    Shared by chess_agent.build_tools and src.recommendation.pipeline's
+    DB-backed tools, so this retry behavior lives in exactly one place.
     """
     conn = get_connection_with_timeout(db_pool)
     for attempt in range(MAX_QUERY_ATTEMPTS):

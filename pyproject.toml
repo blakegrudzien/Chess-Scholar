@@ -17,11 +17,18 @@ dependencies = [
     "anthropic>=0.40",
     "voyageai>=0.3",          # embeddings (Anthropic's recommended partner; no first-party model)
     "psycopg2-binary>=2.9",
-    "sqlalchemy>=2.0",
+    "sqlalchemy>=2.0",        # not currently imported anywhere -- kept for a planned
+                              # future ingestion/file-processing pass, not leftover cruft
     "pgvector>=0.3",
-    "streamlit>=1.38",
+    # Capped, not open-ended: src/ui/styles.py targets one Streamlit-internal,
+    # unversioned Emotion CSS class by exact generated name, which a future
+    # release could rename with no error, just a silent visual regression
+    # (see that file's own comment). Verified against 1.38-1.59; bump this
+    # ceiling deliberately, re-checking that selector, not as a side effect
+    # of an unrelated dependency update.
+    "streamlit>=1.38,<1.60",
     "python-dotenv>=1.0",
-    "pydantic>=2.8",
+    "pydantic>=2.8",          # not currently imported anywhere -- same as sqlalchemy above
     "httpx>=0.27",            # direct HTTP calls to the Lichess API (declared explicitly even
                                # though anthropic already pulls it in transitively -- code that
                                # imports httpx directly should not rely on another package's

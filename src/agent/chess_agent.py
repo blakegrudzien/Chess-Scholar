@@ -43,15 +43,11 @@ class OnPosition(Protocol):
 
 
 MODEL = "claude-sonnet-5"
-# Doubled from the original 4096 after a real, reproduced failure: a turn
-# combining several tool calls (e.g. three show_opening_line diagrams plus
-# their rationale) plus growing conversation history can consume enough
-# output tokens that generation gets cut off mid-tool-call, producing a
-# tool_use block with an incomplete `input` dict -- the direct cause of a
-# KeyError crash in _report_position_update (see its own defensive fix)
-# and almost certainly a contributor to turns ending without ever reaching
-# a clean text synthesis (see _recover_synthesis). More headroom doesn't
-# eliminate the possibility, just makes it meaningfully less likely.
+# Doubled from 4096: a turn combining several tool calls plus growing
+# history can consume enough output tokens that generation gets cut off
+# mid-tool-call, producing a tool_use block with an incomplete `input` dict
+# -- see _report_position_update's defensive .get() and _recover_synthesis.
+# More headroom lowers the odds, doesn't eliminate them.
 MAX_TOKENS = 8192
 
 SYSTEM_PROMPT = """You are a chess research assistant/mentor with access to a corpus \
@@ -164,31 +160,18 @@ def build_tools(
     Stockfish engine pool, and Voyage client.
 
     Each tool call checks a connection out of `db_pool` and returns it
-    afterward, rather than holding one connection for the whole session --
-    this is what lets concurrent sessions run without sharing a connection.
-    On a dead connection (Neon closes idle connections in practice), the
-    pool discards it and hands back a fresh one, all inside the tool call
-    (see db_loader.query_with_retry, which _query below just binds db_pool
-    to -- src.recommendation.pipeline's DB-backed tools use the same
-    helper directly, so this retry behavior lives in exactly one place):
-    the Anthropic SDK's tool_runner catches every exception a tool raises
-    and turns it into a tool_result error sent back to the model, so a
-    raised psycopg2 error never reaches the caller of `ask()` to trigger a
-    retry there.
+    afterward rather than holding one for the whole session, so concurrent
+    sessions don't share a connection; query_with_retry (db_loader.py)
+    handles a dead connection transparently within the call.
 
-    on_position, if given, is also called directly from
-    find_similar_corpus_games with its top match's FEN (when it has one) --
-    unlike evaluate_chess_position's FEN, which is a tool *argument* the
-    model supplies and ask() can read straight off the tool_use block, this
-    one only exists in the tool's *output* (a DB query result the model
-    never sees as a discrete value), so it needs this direct, in-line
-    callback instead of a shared message-scanning mechanism.
-
-    Full signature callers can expect: on_position(fen, *, label=None,
-    update_board=True). show_opening_line is the one caller that passes
-    label and update_board=False -- an illustrative example line isn't the
-    position a caller's UI should treat as "currently under discussion" the
-    way an actual evaluation or matched game is.
+    on_position, if given, is called with the FEN behind a position-touching
+    tool call: (fen, *, label=None, update_board=True). Most calls come from
+    _report_position_update scanning evaluate_chess_position's tool_use
+    block; find_similar_corpus_games calls it directly instead, since its
+    FEN only exists in the tool's *output*, not an argument the model
+    supplies. show_opening_line is the one caller passing update_board=False
+    -- an illustrative example line isn't the position a caller's UI should
+    treat as "currently under discussion."
     """
 
     def _query(fn: Callable, *args, **kwargs):
@@ -455,15 +438,12 @@ def _recover_synthesis(
     one, by continuing the exact conversation the runner already built and
     explicitly asking for the synthesis that turn should have produced.
 
-    runner._params["messages"] is an internal, unversioned attribute, not a
-    guess -- confirmed no public equivalent exists in this SDK version by
-    listing the runner's own public API directly (only append_messages,
-    set_messages_params, generate_tool_call_response, and until_done are
-    exposed; none return the accumulated message list). Anthropic's own
-    compaction_control implementation, a few lines away in this same SDK
-    file, reads this identical private attribute for the same reason --
-    that's the basis for treating it as a reasonable extension point here,
-    not a fragile guess, though it may need revisiting on an SDK upgrade.
+    runner._params["messages"] is an internal, unversioned SDK attribute --
+    used deliberately, not by accident: the runner's public API (append_
+    messages, set_messages_params, generate_tool_call_response, until_done)
+    has no way to read back the accumulated message list, and Anthropic's
+    own compaction_control implementation reads this same private attribute
+    for the same reason. May need revisiting on an SDK upgrade.
     """
     messages = list(runner._params["messages"])
     # A trailing assistant message with an unresolved tool_use block can't

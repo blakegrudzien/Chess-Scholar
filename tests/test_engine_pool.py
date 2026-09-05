@@ -54,6 +54,37 @@ def test_checkout_discards_a_terminated_engine_and_respawns_a_replacement():
         assert engine is replacement_engine
 
 
+def test_checkout_surfaces_original_error_when_respawn_after_crash_also_fails(caplog):
+    """Regression test: the respawn call used to sit unguarded inside the
+    EngineTerminatedError handler -- if it also failed (binary transiently
+    missing, resource limits), that new exception replaced the original
+    EngineTerminatedError, the pool was left silently one engine short of
+    self.size with nothing put back, and the caller never even saw the
+    real error that started it. The original error must still propagate,
+    and the capacity loss must be logged loudly (ERROR) instead of
+    disappearing.
+    """
+    dead_engine = MagicMock(name="dead")
+    with patch("chess.engine.SimpleEngine.popen_uci", side_effect=[dead_engine]):
+        pool = EnginePool("stockfish", size=1)
+
+    with (
+        patch(
+            "chess.engine.SimpleEngine.popen_uci",
+            side_effect=RuntimeError("stockfish binary not found"),
+        ),
+        pytest.raises(chess.engine.EngineTerminatedError),
+    ):
+        with pool.checkout() as engine:
+            assert engine is dead_engine
+            raise chess.engine.EngineTerminatedError("process exited")
+
+    assert any(record.levelname == "ERROR" for record in caplog.records)
+    with pytest.raises(EngineBusyError):
+        with pool.checkout():
+            pass
+
+
 def test_checkout_still_returns_a_healthy_engine_after_an_unrelated_error():
     """A caller's own bug (or any exception unrelated to engine health)
     must not be treated as if the engine itself died -- it's still a

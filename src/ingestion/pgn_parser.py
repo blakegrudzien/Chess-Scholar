@@ -120,7 +120,16 @@ def _material_delta(board: chess.Board, move: chess.Move) -> int:
     return PIECE_VALUES[captured.piece_type] if captured else 0
 
 
-def parse_game(game: chess.pgn.Game, source: str) -> GameRecord:
+def parse_game(
+    game: chess.pgn.Game, source: str, *, truncate_at_repetition: bool = False
+) -> GameRecord:
+    """truncate_at_repetition stops recording moves once a position has
+    occurred for the third time -- off by default (a real historical game
+    can play on past a repeated position instead of claiming the draw, and
+    ingestion must keep that data intact), on for untrusted user uploads
+    (chat.py), where it bounds an adversarial PGN that shuffles pieces back
+    and forth to inflate move count without ever needing an explicit cap.
+    """
     headers = game.headers
     moves: list[MoveRecord] = []
 
@@ -163,6 +172,8 @@ def parse_game(game: chess.pgn.Game, source: str) -> GameRecord:
         board.push(move)
         move_record.fen_after = board.fen()
         moves.append(move_record)
+        if truncate_at_repetition and board.is_repetition(3):
+            break
 
     return GameRecord(
         game_id=compute_game_id(headers, [move.move_san for move in moves]),
@@ -177,14 +188,18 @@ def parse_game(game: chess.pgn.Game, source: str) -> GameRecord:
     )
 
 
-def parse_pgn(path: str | Path, source: str) -> Iterator[GameRecord]:
-    """Yield one GameRecord per game found in the PGN file at `path`."""
+def parse_pgn(
+    path: str | Path, source: str, *, truncate_at_repetition: bool = False
+) -> Iterator[GameRecord]:
+    """Yield one GameRecord per game found in the PGN file at `path`. See
+    parse_game's docstring for truncate_at_repetition.
+    """
     with open(path, encoding="utf-8", errors=PGN_DECODE_ERRORS) as pgn_file:
         while True:
             game = chess.pgn.read_game(pgn_file)
             if game is None:
                 break
-            yield parse_game(game, source)
+            yield parse_game(game, source, truncate_at_repetition=truncate_at_repetition)
 
 
 def _main() -> None:
