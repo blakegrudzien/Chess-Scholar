@@ -107,8 +107,14 @@ plus the most relevant sidelines) is plenty; skip minor branches.
 
 Before calling a tool, state in one short sentence which layer you're using \
 and why -- e.g. "Checking Layer 2 for strategic ideas about isolated pawns." \
-This sentence is shown to the user live while they wait; keep it brief and \
-write it as a standalone status update, not as part of your eventual answer.
+This sentence is shown to the user live while they wait, then discarded -- \
+it never appears in the conversation transcript and is not part of your \
+answer. Put no analysis, explanation, or content here that the user needs \
+to actually see, or that you don't repeat in full later: only your final \
+text-only turn (the one with no tool call) is kept and shown as your \
+answer. If earlier tool calls surfaced something worth discussing -- a \
+line you looked up with show_opening_line, a stat, an evaluation -- say so \
+in that final turn, not only in an earlier one's rationale.
 
 A user message may start with a line like "Current board position: <FEN>" -- \
 this means they set up that position on their own board and are asking about \
@@ -396,6 +402,24 @@ def _report_tool_steps(message, on_step: Callable[[str], None]) -> None:
     if not tool_names:
         return
     rationale = "".join(block.text for block in message.content if block.type == "text").strip()
+    if len(rationale) > 400:
+        # The system prompt asks for one short sentence here (see
+        # SYSTEM_PROMPT's own instruction) precisely because only the final
+        # text-only turn is ever kept and shown to the user -- ask()'s
+        # final_text is reassigned each turn, not accumulated, so anything
+        # substantive written here is silently discarded. A real, reported
+        # bug: the model occasionally front-loads real analysis into a
+        # rationale instead of the final synthesis, and the user sees a
+        # rich answer stream by live, then watches it "shrink" to whatever
+        # short text the last turn actually contained. Logged rather than
+        # truncated -- truncating here would just move the same content
+        # loss earlier without fixing it; this is a signal to check how
+        # often the model still does this despite the prompt instruction.
+        logger.warning(
+            "Unusually long tool-call rationale (%d chars), likely discarded content: %r",
+            len(rationale),
+            rationale[:200],
+        )
     if not rationale:
         rationale = " / ".join(TOOL_LABELS.get(name, f"Calling {name}...") for name in tool_names)
     on_step(rationale)
