@@ -12,8 +12,22 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping the app
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright
         run: |
-          curl -sS -o /dev/null -w "HTTP %{http_code}\n" \
-            --max-time 60 --retry 3 --retry-delay 10 \
-            https://chess-rag-blake.streamlit.app/
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Visit the app with a real browser
+        # Not curl: confirmed live that a curl ping "succeeding" daily for
+        # days straight did not stop the app from going to sleep -- curl
+        # never establishes the real page-load + WebSocket session
+        # Streamlit Cloud actually tracks as a visit. See the script's own
+        # docstring for the full story.
+        run: python scripts/keep_streamlit_awake.py
