@@ -2,10 +2,17 @@ name: Keep Streamlit app awake
 
 on:
   schedule:
-    # Daily. Streamlit Community Cloud puts idle apps to sleep after a period
-    # of no traffic; this is a resume-linked demo, so it needs to stay warm
-    # for a recruiter clicking in cold.
-    - cron: "0 14 * * *"
+    # Every 8 hours. Streamlit Community Cloud puts idle apps to sleep after
+    # a period of no traffic; this is a resume-linked demo, so it needs to
+    # stay warm for someone clicking in cold.
+    #
+    # Not daily: the app was observed asleep roughly 27 hours after its last
+    # real visit, so a 24-hour interval sits right on the edge of the sleep
+    # window with no margin. GitHub also runs scheduled workflows late under
+    # load, and a run that slips past the window is a run that arrives after
+    # the app has already gone under. Three runs a day is free and removes
+    # the boundary rather than betting on where exactly it falls.
+    - cron: "0 */8 * * *"
   workflow_dispatch: {}
 
 jobs:
