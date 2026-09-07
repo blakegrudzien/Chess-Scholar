@@ -106,8 +106,21 @@ def evaluate_game(
 
 
 def _to_comparable_cp(position_eval: PositionEval) -> int:
+    """One integer scale covering both mate and centipawn evaluations, so
+    classify_move can subtract them.
+
+    PositionEval's contract is that exactly one of mate_in/score_cp is set,
+    which evaluate_position guarantees. That invariant is a convention on a
+    plain dataclass rather than something the type system enforces, so it is
+    checked here instead of letting a violation surface as a TypeError from
+    the arithmetic in classify_move, several frames from the real cause.
+    """
     if position_eval.mate_in is not None:
         return MATE_SCORE_CP if position_eval.mate_in > 0 else -MATE_SCORE_CP
+    if position_eval.score_cp is None:
+        raise ValueError(
+            f"PositionEval for {position_eval.fen!r} has neither a mate_in nor a score_cp"
+        )
     return position_eval.score_cp
 
 

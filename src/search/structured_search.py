@@ -123,6 +123,11 @@ def piece_placement_frequency(
     Restricted to the first `max_ply` half-moves (the opening phase) unless
     max_ply is None, in which case the whole game is considered.
     """
+    # piece_clause is one of three literal fragments chosen by
+    # _piece_match_clause, which rejects any piece outside _VALID_PIECES and
+    # any color outside the three it knows before returning. The caller's
+    # own values are never interpolated -- they come back as piece_value and
+    # are bound below -- so nothing user-controlled reaches the query text.
     piece_clause, piece_value = _piece_match_clause(piece, color)
     query = f"""
         SELECT m.to_sq, count(*) AS cnt
@@ -134,7 +139,7 @@ def piece_placement_frequency(
         GROUP BY m.to_sq
         ORDER BY cnt DESC, m.to_sq
         LIMIT %s
-    """
+    """  # noqa: S608 -- piece_clause is a validated literal, see above
     with conn.cursor() as cur:
         cur.execute(query, (eco_code, piece_value, max_ply, max_ply, limit))
         rows = cur.fetchall()

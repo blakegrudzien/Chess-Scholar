@@ -71,6 +71,8 @@ Two candidate models (logistic regression and gradient-boosted trees) are compar
 | Endgame phase | 16 | 0.750 | 0.857 | 0.667 | 0.750 | 0.921 |
 | General phase | 31 | 0.935 | 0.778 | 1.000 | 0.875 | 0.964 |
 
+One caveat on reading those numbers: the same cross-validation folds are used both to choose between the two candidate models and to report the winner's performance, so the headline figure is a selection-inclusive estimate rather than a clean held-out one, and is optimistically biased by some small amount. With only two candidates under comparison the effect is limited, but an unbiased estimate would require nested cross-validation or a test set held back from selection entirely.
+
 The training set excludes one genre entirely: every narrative-genre label collected came back "reject," so training on it would teach the model a pattern it would never be asked to apply again, a train/serve skew avoided by leaving that genre out up front rather than filtering it after the fact. A separate, independent likes floor (`MIN_LIKES_FOR_RECOMMENDATION`) gates recommendations too: a study the classifier scores well can still be too obscure to serve, since almost nobody having seen it is a different risk than the classifier's own accuracy addresses.
 
 ## Design decisions worth noting
@@ -125,7 +127,7 @@ Master game annotations are exported from ChessBase 17 under the author's own li
 
 ## Testing
 
-241 tests, run against both Python 3.11 and 3.12 in CI. A handful require a local Postgres with pgvector and self-skip with a clear reason when one is not available; CI itself provisions both, so a passing build always exercises the real thing, including the database schema's own constraints, not just mocked versions of it.
+253 tests, run against both Python 3.11 and 3.12 in CI. A handful require a local Postgres with pgvector and self-skip with a clear reason when one is not available; CI itself provisions both, so a passing build always exercises the real thing, including the database schema's own constraints, not just mocked versions of it.
 
 The suite leans toward regression tests for real, previously-reproduced bugs (a dropped database connection mid-session, a PGN upload malformed enough to crash a naive parser, a concurrent evaluation race) rather than only happy-path coverage.
 

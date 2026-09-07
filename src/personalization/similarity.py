@@ -40,6 +40,12 @@ def find_similar_games(
         raise ValueError("user_moves must be non-empty")
 
     target = list(enumerate(user_moves[:max_ply], start=1))
+    # The only thing interpolated into the query text below is this string,
+    # and it contains no caller data at all -- it is `len(target)` copies of
+    # the literal "(%s, %s)". Every move the user supplied is bound through
+    # `params`, so the moves are values, never SQL. A VALUES list has to be
+    # built this way because its length varies with the input and psycopg2
+    # has no placeholder for "a row set of unknown size".
     values_clause = ", ".join(["(%s, %s)"] * len(target))
     params: list[object] = [item for ply, san in target for item in (ply, san)]
 
@@ -64,7 +70,7 @@ def find_similar_games(
             AND fm.ply = COALESCE(matched.first_mismatch_ply - 1, matched.plies_checked)
         ORDER BY match_length DESC, g.game_id
         LIMIT %s
-    """
+    """  # noqa: S608 -- values_clause holds only literal placeholders, see above
 
     with conn.cursor() as cur:
         cur.execute(query, [*params, limit])

@@ -17,6 +17,7 @@ import logging
 import time
 from collections.abc import Iterator
 from types import TracebackType
+from urllib.parse import quote
 
 import httpx
 
@@ -170,7 +171,7 @@ def game_embed_url(game_id: str, *, theme: str = "auto", bg: str = "auto") -> st
     """Build a read-only, embeddable URL for a single game -- Lichess's own
     "Embed in your website" feature, confirmed format.
     """
-    return f"{LICHESS_BASE_URL}/embed/{game_id}?theme={theme}&bg={bg}"
+    return f"{LICHESS_BASE_URL}/embed/{quote(game_id, safe='')}?theme={theme}&bg={bg}"
 
 
 def study_chapter_embed_url(study_id: str, chapter_id: str, *, bg: str = "dark") -> str:
@@ -182,8 +183,8 @@ def study_chapter_embed_url(study_id: str, chapter_id: str, *, bg: str = "dark")
     by defaulting chapter_id to something unverified. Whatever calls this
     is responsible for having already picked a chapter.
 
-    bg defaults to "dark", not Lichess's own "auto" -- confirmed live that
-    auto sets data-theme="system" on the embedded page, meaning it follows
+    bg defaults to "dark", not Lichess's own "auto": auto sets
+    data-theme="system" on the embedded page, meaning it follows
     whichever viewer's own OS light/dark preference, not this app's own
     walnut/parchment identity. Most viewers are on light mode by default,
     which renders Lichess's stark white theme directly against a dark
@@ -191,4 +192,7 @@ def study_chapter_embed_url(study_id: str, chapter_id: str, *, bg: str = "dark")
     every viewer regardless of their own system setting, matching the
     deliberate single-theme choice made for the rest of the app's design.
     """
-    return f"{LICHESS_BASE_URL}/study/embed/{study_id}/{chapter_id}?bg={bg}"
+    return (
+        f"{LICHESS_BASE_URL}/study/embed/"
+        f"{quote(study_id, safe='')}/{quote(chapter_id, safe='')}?bg={bg}"
+    )

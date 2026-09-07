@@ -46,6 +46,13 @@ from src.search.structured_search import (
 MODEL = "claude-sonnet-5"
 MAX_TOKENS = 2048
 
+# Ceiling on tool-calling round trips for one lookup, for the same reason
+# chess_agent.MAX_AGENT_TURNS exists: this runs behind a button on a public,
+# unauthenticated app and chains Anthropic, Voyage, and live Lichess HTTP
+# calls per turn. Lower than the chat agent's ceiling because this task is
+# narrower -- search, list chapters, record one or two recommendations.
+MAX_AGENT_TURNS = 6
+
 SYSTEM_PROMPT = """You help decide whether any external resources are worth \
 recommending alongside an answer to a chess question.
 
@@ -272,7 +279,12 @@ def recommend_resources(
         system=SYSTEM_PROMPT,
         tools=tools,
         messages=[{"role": "user", "content": question}],
+        max_iterations=MAX_AGENT_TURNS,
     )
+    # The recommendations are collected in `state` by the tools themselves,
+    # so the loop only needs to drive the runner to completion. Hitting the
+    # iteration ceiling is not an error here: whatever was recorded before
+    # the ceiling is still a valid (possibly empty) result.
     for _ in runner:
         pass
 

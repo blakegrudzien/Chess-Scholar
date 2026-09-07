@@ -1,14 +1,13 @@
 """Visits the deployed Chess Scholar app with a real headless browser so
 Streamlit Community Cloud counts it as an actual visit, not just an HTTP hit.
 
-Replaces a plain curl ping (the original keep-alive.yml) that ran daily and
-reported success for days straight while the app was, in fact, asleep --
-confirmed live, not theoretical: curl gets back whatever the gateway is
-currently serving (the static "this app has gone to sleep" page included)
-with a normal 200/303, so its exit code says nothing about whether the
-underlying app container is actually awake. Waking (and staying awake)
-requires the real page load + WebSocket handshake only a browser produces,
-which is what this script does instead.
+A plain curl ping is not sufficient here, and reports success whether or
+not the app is actually up: curl receives whatever the gateway is currently
+serving -- the static "this app has gone to sleep" page included -- with a
+normal 200/303, so its exit code says nothing about the state of the
+underlying app container. Waking the app, and keeping it awake, requires
+the full page load and WebSocket handshake that only a real browser
+performs, which is what this script does instead.
 
 Exits non-zero if the app never actually loads within the timeout below --
 unlike curl's "any HTTP response is success", a real failure here means
@@ -41,17 +40,18 @@ def main() -> int:
         if "get this app back up" in text.lower() or "zzz" in text.lower():
             try:
                 page.get_by_role("button", name="Yes, get this app back up!").click(timeout=10_000)
-            except Exception:
-                # The button's exact text/presence isn't a stable contract
-                # (Streamlit Cloud's own UI, not this repo's) -- fall
-                # through to the polling loop below regardless; it will
-                # simply time out and fail the job if this didn't help.
-                pass
+            except Exception as exc:
+                # The button's exact text and presence are Streamlit Cloud's
+                # own UI, not this repo's, so they are not a stable contract.
+                # Fall through to the polling loop regardless: if this click
+                # was needed and did not happen, the loop times out and fails
+                # the job, which is the signal that matters.
+                print(f"Wake-up button not clicked ({type(exc).__name__}); continuing anyway.")
 
-        # The real app renders inside a nested iframe on Streamlit Cloud
-        # (confirmed live: the top-level page is just hosting chrome) --
-        # waiting for real content in that specific frame, not just "some
-        # frame changed", is what actually confirms the app came up.
+        # The real app renders inside a nested iframe on Streamlit Cloud;
+        # the top-level page is only hosting chrome. Waiting for real
+        # content in that specific frame, rather than for any frame at all,
+        # is what actually confirms the app came up.
         start = time.monotonic()
         deadline = start + MAX_WAIT_SECONDS
         while time.monotonic() < deadline:

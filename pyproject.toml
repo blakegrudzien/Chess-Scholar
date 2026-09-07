@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "chess-rag"
+name = "chess-scholar"
 version = "0.1.0"
 description = "Hybrid structured-search + RAG chess assistant"
 license = "MIT"
@@ -62,7 +62,19 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+# S (flake8-bandit) is included deliberately: this app is deployed publicly
+# with no authentication and handles untrusted input (uploaded PGNs, model-
+# supplied tool arguments), so the security lints are worth enforcing rather
+# than relying on review to catch the same classes of problem by eye.
+select = ["E", "F", "I", "UP", "B", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# S101: pytest's assert-based style is the point of the framework.
+# S603/S607: test_board_component.py launches the app under test via
+# `streamlit run` with a fixed, literal argv and no caller-supplied input;
+# resolving an absolute interpreter path would only make the test brittle
+# across environments. None of this ships with the deployed app.
+"tests/*" = ["S101", "S603", "S607"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -4,7 +4,7 @@ import psycopg2
 import pytest
 import voyageai.error
 
-from src.embeddings.voyage_embedder import embed_pending_chunks
+from src.embeddings.voyage_embedder import RETRY_BACKOFF_BASE_SECONDS, embed_pending_chunks
 
 
 def _mock_connect_with_batches(batches: list[list[tuple[int, str]]]):
@@ -202,8 +202,14 @@ def test_retries_on_voyage_timeout_without_reconnecting_db():
     assert embedded == 1
     assert connect.call_count == 1  # Voyage errors don't trigger a DB reconnect
     conn.close.assert_called_once()
-    mock_sleep.assert_called_once_with(5)
     mock_execute_values.assert_called_once()
+    # Backoff is exponential with full jitter, so the exact delay is a random
+    # draw. What matters is that the retry waited at all, and stayed inside
+    # the window the first failure allows -- pinning one value would only
+    # assert which number random.uniform happened to return.
+    mock_sleep.assert_called_once()
+    (delay,) = mock_sleep.call_args.args
+    assert 0 <= delay <= RETRY_BACKOFF_BASE_SECONDS
 
 
 def test_gives_up_after_too_many_voyage_errors():

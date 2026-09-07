@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import random
 import time
 from collections.abc import Callable
 
@@ -27,7 +28,14 @@ from src.ingestion.db_loader import get_connection
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 128  # Voyage API max texts per embed() call
-RETRY_BACKOFF_SECONDS = 5
+
+# Exponential backoff with jitter, not a fixed delay. A rate limit is the
+# most common retryable error here and is cleared by waiting longer, not by
+# asking again at the same interval; and full jitter keeps concurrent
+# workers from retrying in lockstep after a shared outage. Capped so a long
+# ingestion run never stalls for minutes on a single batch.
+RETRY_BACKOFF_BASE_SECONDS = 5
+RETRY_BACKOFF_MAX_SECONDS = 60
 
 Connect = Callable[[], psycopg2.extensions.connection]
 
@@ -150,7 +158,13 @@ def embed_pending_chunks(
                 logger.warning("Voyage API error (consecutive=%d): %s", consecutive_failures, exc)
                 if consecutive_failures > max_consecutive_failures:
                     raise
-                time.sleep(RETRY_BACKOFF_SECONDS)
+                delay = min(
+                    RETRY_BACKOFF_BASE_SECONDS * 2 ** (consecutive_failures - 1),
+                    RETRY_BACKOFF_MAX_SECONDS,
+                )
+                # random.uniform, not secrets: this is retry timing, not a
+                # security decision.
+                time.sleep(random.uniform(0, delay))  # noqa: S311
     finally:
         conn.close()
 
