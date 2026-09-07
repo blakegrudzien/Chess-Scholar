@@ -1,11 +1,10 @@
 """A draggable chess board, built as an st.components.v2 component around
-chessboard.js -- replaces the old static chess.svg image plus a separate
-click-grid with a single interactive widget.
+chessboard.js.
 
 Deliberately not paired with chess.js: move legality stays entirely in
 python-chess, the same source of truth the rest of this app already uses.
-See chat.py's _render_board_panel docstring for the optimistic-UI flow this
-implies.
+See board_panel.py's render_board_panel docstring for the optimistic-UI
+flow this implies.
 
 isolate_styles=False is required, not a style choice: chessboard.js uses
 jQuery ID-based lookups (`$("#" + squareId)`) against the *document* to
@@ -36,10 +35,9 @@ _JS = "\n".join(
 # file directly, so re-vendoring a future chessboard.js release doesn't
 # silently drop it. chessboard.js's own coordinate labels (.notation-322f9)
 # sit on the corner of every edge square, position:absolute; a piece image
-# there is plain position:static -- confirmed live (piece computed
-# position: static, notation: absolute) that a positioned element always
-# paints above a static sibling regardless of z-index or DOM order, which
-# is why the label was covering the piece rather than the reverse.
+# there is plain position:static. A positioned element always paints above
+# a static sibling regardless of z-index or DOM order, which is why the
+# label covers the piece rather than the reverse.
 # Explicitly positioning the piece with a z-index gives it something to
 # actually win the stacking comparison against, rather than trying to push
 # the label behind it with a negative z-index, which would escape this

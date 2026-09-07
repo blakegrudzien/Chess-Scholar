@@ -1,7 +1,10 @@
-"""The main (and only) screen: chat transcript (PGN attachments included --
-see render_main_screen's chat_input), the board panel alongside it, and
-the resource-recommendation cards -- everything that reads or writes
-st.session_state.chat_history/board.
+"""The conversation half of the app's single screen: the chat transcript
+(PGN attachments included, see render_main_screen's chat_input), the live
+streaming/status UI for an in-flight answer, and the resource-recommendation
+cards. Owns st.session_state.chat_history.
+
+render_main_screen also composes the board column, but that column's own
+rendering and state live in board_panel.py.
 """
 
 from __future__ import annotations
@@ -29,8 +32,9 @@ from src.recommendation.pipeline import (
     LichessStudyRecommendation,
     recommend_resources,
 )
-from src.ui.board_component import chess_board
+from src.ui.board_panel import render_board_panel
 from src.ui.conversation_log import log_conversation_best_effort
+from src.ui.help_text import FEN_HELP
 from src.ui.resources import (
     get_anthropic_client,
     get_db_pool,
@@ -55,28 +59,11 @@ STREAM_WORD_DELAY_SECONDS = 0.02
 # the model to place inline in its own answer -- see _render_answer_content.
 _DIAGRAM_MARKER_RE = re.compile(r"\[\[diagram:\s*(.*?)\s*\]\]")
 
-# Shared help= text for every raw FEN/ply caption in this file (the chat
-# transcript's "Position: ..." captions, and the board panel's own "FEN: "/
-# "-- ply N of M" captions) -- these are real chess notation terms with no
-# obvious meaning to a reader who doesn't already play, and st.caption's
-# help= renders a small hover tooltip for exactly this, rather than
-# spelling either term out inline every time and cluttering what's meant
-# to be a compact, glanceable caption.
-_FEN_HELP = (
-    "FEN (Forsyth-Edwards Notation): a compact text format that fully "
-    "encodes a chess position -- where every piece is, whose turn it is, "
-    "and a few other rules-relevant details."
-)
-_PLY_HELP = "A ply is one player's move -- White's 1st move is ply 1, Black's reply is ply 2, etc."
-
-# Caps the paced reveal to the first N words of any single turn's text --
-# without this, a long final answer (a real one ran 900+ words this
-# session) pays STREAM_WORD_DELAY_SECONDS on every single word with no
-# ceiling, adding 15-20+ seconds of pure artificial delay on top of the
-# real generation/tool-call latency of an already-long multi-turn answer.
-# The first N words still get the smooth typewriter feel; the rest of a
-# long answer (or a tool-calling turn's rationale, which gets discarded by
-# on_step a moment later regardless) appears immediately.
+# Caps the paced reveal to the first N words of any single turn's text.
+# Without a ceiling, a long answer -- 900+ words is realistic -- pays
+# STREAM_WORD_DELAY_SECONDS on every word, adding 15-20 seconds of purely
+# artificial delay on top of real generation and tool-call latency. The
+# first N words still get the typewriter feel; the rest appears at once.
 MAX_PACED_WORDS_PER_TURN = 40
 
 # Cap on how many inline diagrams one answer shows -- "main line + a couple
@@ -84,20 +71,19 @@ MAX_PACED_WORDS_PER_TURN = 40
 # answer works against scannability.
 MAX_INLINE_DIAGRAMS = 4
 
-# Height of the scrollable message panel (see render_main_screen). Trimmed
-# down from 660 as part of fitting a fresh, question-less page inside a
-# laptop viewport with no vertical scroll (a 14" MacBook's default logical
-# resolution is the binding case) -- board_col's own natural height ends up
-# the real floor either way (confirmed live), so this doesn't run short of
-# board_col's typical height so much as stop needlessly exceeding it.
+# Height of the scrollable message panel (see render_main_screen). Sized so
+# a fresh, question-less page fits inside a laptop viewport with no vertical
+# scroll; a 14" MacBook's default logical resolution is the binding case.
+# The board column's natural height is the real floor here, so this is set
+# to sit at that height rather than needlessly exceed it.
 MESSAGE_PANEL_HEIGHT_PX = 560
 
 # Streamlit's default chat avatars are a generic face/robot Material icon --
 # a visual cue that reads as "generic AI chatbot," working against the
 # deliberately non-modern, non-AI-flavored identity built for this app.
-# Chess pieces are already this app's own icon language (the board tab
-# renders pieces via chess.svg), not a new decoration introduced just for
-# the avatars.
+# Chess pieces are already this app's own icon language (the board renders
+# pieces via chess.svg), not a new decoration introduced just for the
+# avatars.
 #
 # st.chat_message's avatar param only accepts emoji from Streamlit's own
 # curated allow-list (streamlit.emojis.ALL_EMOJIS), not arbitrary Unicode --
@@ -108,8 +94,8 @@ MESSAGE_PANEL_HEIGHT_PX = 560
 # rendering. Passing a raw SVG string sidesteps the allow-list entirely --
 # image_to_url() special-cases strings that look like <svg ...> markup and
 # inlines them as a data URI -- and reuses chess.svg.piece(), the same
-# renderer already used for the board tab, instead of depending on emoji
-# font coverage across viewers' systems.
+# renderer used for the board itself, instead of depending on emoji font
+# coverage across viewers' systems.
 _CHAT_AVATARS = {
     "user": chess.svg.piece(chess.Piece(chess.PAWN, chess.BLACK), size=32),
     "assistant": chess.svg.piece(chess.Piece(chess.BISHOP, chess.WHITE), size=32),
@@ -165,14 +151,14 @@ def ask_with_status(
         # plain streamed text (nothing distinguishes them until a tool_use
         # block does or doesn't show up at the end of the turn), so on_step
         # below only has to promote this preview to a permanent
-        # status.write() line -- a real, reported bug when this was a
-        # top-level placeholder instead: a turn's text visibly jumped into
-        # the box the moment a tool call was confirmed.
+        # status.write() line. As a top-level placeholder instead, a
+        # turn's text visibly jumped into the box the moment a tool call
+        # was confirmed.
         preview_area = st.empty()
     # Declared after the status box: message_panel autoscrolls to follow
     # streamed content, and a placeholder's DOM position is fixed at
-    # creation time -- declared first, this stayed pinned above the
-    # streamed text and scrolled out of view on a long answer.
+    # creation time, so declaring this first would pin it above the
+    # streamed text and scroll it out of view on a long answer.
     stop_placeholder = st.empty()
     stop_placeholder.button("Stop generating", key="stop_generating")
     final_area = st.empty()
@@ -373,7 +359,7 @@ def _render_resource_recommendations() -> None:
 
 def _game_path_from_pgn(pgn: str) -> list[str] | None:
     """Every ply's FEN in a PGN's mainline, starting position included at
-    index 0 -- the sequence _render_board_panel's Prev/Next steps through
+    index 0 -- the sequence the board panel's Prev/Next steps through
     for a "Play through this game" recommendation.
 
     Returns None if the PGN doesn't parse. Defensive, not expected in
@@ -407,10 +393,14 @@ def _describe_uploaded_game(uploaded_file, user_text: str) -> str | None:
     right before a rerun -- there's no later point a caller could still
     surface the message) if the file has no parseable game.
     """
-    with tempfile.NamedTemporaryFile(suffix=".pgn", delete=False) as tmp:
-        tmp.write(uploaded_file.getvalue())
-        tmp_path = tmp.name
+    # Initialized before the write, not inside it: if the write itself
+    # fails, the finally below still has a defined name to check instead of
+    # raising NameError and masking the real exception.
+    tmp_path: str | None = None
     try:
+        with tempfile.NamedTemporaryFile(suffix=".pgn", delete=False) as tmp:
+            tmp_path = tmp.name
+            tmp.write(uploaded_file.getvalue())
         # Only the first game is ever used below, so pull at most two from
         # the generator: the first to use, and a second only to learn
         # whether there's more than one, without fully parsing an upload
@@ -435,7 +425,8 @@ def _describe_uploaded_game(uploaded_file, user_text: str) -> str | None:
         st.error("Couldn't find a game in that file.")
         return None
     finally:
-        os.unlink(tmp_path)
+        if tmp_path is not None:
+            os.unlink(tmp_path)
 
     if not first_two_games:
         st.error("Couldn't find a game in that file.")
@@ -495,13 +486,12 @@ def _render_answer_content(text: str, image_fens: list[tuple[str, str | None]]) 
 
     The marker is a literal token the model was explicitly told to place
     at the point in its own answer where a diagram belongs, using the same
-    label it already passed to show_opening_line -- an earlier version of
-    this tried to *find* that label by searching the answer's free-form
-    prose for it, which almost never matched (nothing obliges the model to
-    repeat a tool argument verbatim in its synthesis), so diagrams still
-    landed at the end regardless. A marker the model is told to write is a
-    real contract; a string search against text it wasn't told to shape
-    around that string is not.
+    label it already passed to show_opening_line. Searching the answer's
+    free-form prose for that label instead almost never matches -- nothing
+    obliges the model to repeat a tool argument verbatim in its synthesis
+    -- so diagrams would land at the end regardless. A marker the model is
+    told to write is a real contract; a string search against text it was
+    never told to shape around that string is not.
 
     Every marker match is stripped from the visible text whether or not it
     resolves to a diagram -- a label with nothing left to match (unknown
@@ -639,7 +629,7 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
     with st.chat_message("user", avatar=_CHAT_AVATARS["user"]):
         st.markdown(question)
         if fen_context is not None:
-            st.caption(f"Position: `{fen_context}`", help=_FEN_HELP)
+            st.caption(f"Position: `{fen_context}`", help=FEN_HELP)
     sent_question = _to_model_text(question, fen_context)
     with st.chat_message("assistant", avatar=_CHAT_AVATARS["assistant"]):
         answer, touched_fens = ask_with_status(sent_question, history=history)
@@ -666,15 +656,17 @@ def _render_example_prompts() -> None:
     skipped and the loop renders the new pair exactly once.
     """
     st.caption("Try asking:")
+    # One example per layer, so the four together demonstrate the routing
+    # rather than four variations on the same backend.
     examples = [
-        # The flagship demo query from CLAUDE.md: Layer 1 stats + Layer 2
-        # strategic prose, synthesized together.
+        # Layers 1 + 2 together: corpus statistics synthesized with strategic
+        # prose. The flagship query for this project (see CLAUDE.md).
         "How should White meet the Sicilian Defense?",
         "Evaluate 1. e4 e5 2. Qh5 for White",  # Layer 3, engine grounding
         "What's the plan behind an isolated queen pawn?",  # Layer 2, conceptual
-        # Trend synthesis (CLAUDE.md), a distinct supported feature none
-        # of the other three examples touch.
-        "How has the King's Indian Defense's popularity changed over time?",
+        # Layer 1 alone: a piece-placement aggregation with no conceptual
+        # half, so one example exercises the structured-search path on its own.
+        "Where does White's knight usually end up in the Najdorf?",
     ]
     for i, example in enumerate(examples):
         if st.button(example, key=f"example_prompt_{i}", width="stretch"):
@@ -747,7 +739,7 @@ def render_main_screen() -> None:
                     else:
                         st.markdown(content)
                     if fen is not None:
-                        st.caption(f"Position: `{fen}`", help=_FEN_HELP)
+                        st.caption(f"Position: `{fen}`", help=FEN_HELP)
 
             pending = st.session_state.pending_question
             if pending is not None:
@@ -768,6 +760,13 @@ def render_main_screen() -> None:
             accept_file=True,
             file_type=["pgn"],
         )
+        # Questions and answers are saved to the conversation_log table (see
+        # src/ui/conversation_log.py). Stated here, next to the input itself,
+        # rather than only in the README: the people typing into a public
+        # demo are not the people reading its documentation, and this app's
+        # own premise is disclosing its limits up front instead of leaving
+        # them to be discovered.
+        st.caption("Questions and answers are saved to help improve this demo.")
         if submission is not None:
             question = None
             if submission.files:
@@ -779,213 +778,15 @@ def render_main_screen() -> None:
                     _submit_question(question)
 
     with board_col, st.container(key="board_panel"):
-        # Keyed purely so styles.py can tighten the default ~16px gap
-        # Streamlit puts between every element in this column -- board_col
-        # was the binding constraint on the whole page's height (its own
-        # natural content ran taller than chat_col's), so this is a big
-        # part of fitting an unscrolled, question-less page inside a
-        # laptop viewport (see stMainBlockContainer's own padding comment
-        # in styles.py for the rest of that budget).
-        _render_board_panel()
-
-
-def _attempt_move(source: str, target: str) -> None:
-    """Validate a drag-and-drop {from, to} pair against python-chess -- the
-    single source of truth for legality, mirroring how handle_square_click
-    used to work but for a one-shot from/to pair instead of two separate
-    clicks. Falls back to auto-queen promotion, same as before.
-
-    source/target come back from chess_board() as plain strings the custom
-    component's own JS chose to send -- in normal use always a real drag's
-    two algebraic squares, but nothing on the Python side enforces that
-    shape, so a malformed pair (not a legal chess.Move.from_uci input at
-    all, as opposed to merely an illegal move) must be handled the same
-    honest way as any other illegal drop instead of raising InvalidMoveError
-    straight through to Streamlit's default full-traceback error page.
-
-    Always bumps board_generation, including on rejection: an illegal drop
-    leaves board.fen() textually identical to what it was before the drop,
-    so without a distinct generation value the component has no signal that
-    it needs to re-render and snap the piece back -- see chess_board()'s own
-    docstring for why this is required, not just belt-and-suspenders.
-    """
-    board: chess.Board = st.session_state.board
-    try:
-        move = chess.Move.from_uci(source + target)
-        if move not in board.legal_moves:
-            move = chess.Move.from_uci(source + target + "q")
-    except chess.InvalidMoveError:
-        move = None
-    if move is not None and move in board.legal_moves:
-        board.push(move)
-        st.session_state.last_illegal_attempt = None
-    else:
-        st.session_state.last_illegal_attempt = (source, target)
-    st.session_state.board_generation += 1
-
-
-def _render_board_panel() -> None:
-    """The board column: a draggable board reflecting the position under
-    discussion, plus a quick-eval button, Reset/Undo, and a free-text
-    "ask about this position" form -- or, while replaying a recommended
-    game (st.session_state.game_path is not None), a read-only board
-    stepping through that game's moves instead, with Evaluate/Ask-position
-    operating on whatever ply is currently shown.
-
-    Optimistic UI, no client-side legality check: chess_board() lets a drop
-    land wherever dropped, and _attempt_move validates it against
-    python-chess. An illegal drop leaves st.session_state.board unchanged,
-    so the next render's still-unmoved `data` reverts the piece visually via
-    chessboard.js's own diffing. Dragging is disabled entirely during replay
-    (draggable=False) rather than left on and silently ignored: during
-    replay, st.session_state.board is the free-play board sitting *behind*
-    the visible replay position, not a copy -- a drag left enabled there
-    would corrupt it invisibly.
-
-    Neither button below calls ask_with_status directly -- both stash a
-    (question, fen) pair in st.session_state.pending_question and
-    st.rerun() instead, so the actual submission happens from inside
-    chat_col on the next script pass, not in this narrow column (see
-    _submit_question's docstring).
-    """
-    replaying = st.session_state.game_path is not None
-    if replaying:
-        current_board = chess.Board(st.session_state.game_path[st.session_state.game_path_index])
-    else:
-        # The same object stored in session_state, not a copy -- Undo's
-        # current_board.pop() below still mutates st.session_state.board
-        # in place, exactly as it did before this function had a
-        # replay/free-play distinction to make.
-        current_board = st.session_state.board
-
-    # Turn/FEN/Reset/Undo (or, during replay, the ply label and Prev/Next)
-    # sit beside the board rather than stacked below it, to close the height
-    # gap between board_col and chat_col. [5, 2], not [3, 2]: chess_board()'s
-    # size=340 is a floor chessboard.js never shrinks below regardless of
-    # container width, and [3, 2] overflowed it at a 14" MacBook's default
-    # width (confirmed live).
-    board_display_col, controls_col = st.columns([5, 2])
-
-    with board_display_col:
-        # Wrapped in a keyed container (not passed as chess_board()'s own
-        # `key=`) purely so the tutorial overlay has a stable
-        # `.st-key-tutorial_board_target` selector to spotlight -- giving
-        # chess_board() itself a key would make Streamlit treat it as one
-        # persistent instance and stop remounting it when `data` changes,
-        # which is exactly the mechanism board_generation relies on for
-        # illegal-move snapback and Undo (see chess_board()'s docstring).
-        with st.container(key="tutorial_board_target"):
-            # size=340, down from the old standalone tab's 400 -- this board
-            # shares horizontal space with chat instead of the full page.
-            drop = chess_board(
-                current_board.fen(),
-                size=340,
-                generation=st.session_state.board_generation,
-                draggable=not replaying,
-            )
-        if drop is not None and not replaying:
-            _attempt_move(drop["from"], drop["to"])
-            st.rerun()
-
-    with controls_col:
-        st.caption(f"Turn: {'White' if current_board.turn else 'Black'}")
-        # A caption with inline code, not st.code() -- a single short FEN
-        # line doesn't need its own full dark code panel (heavy padding, a
-        # copy button); the same subtle inline-code style already used for
-        # the "Position: `{fen}`" captions elsewhere in this file reads as
-        # plain, quiet text instead of a block that sticks out -- and
-        # wraps naturally across a few lines in this narrower column.
-        st.caption(f"FEN: `{current_board.fen()}`", help=_FEN_HELP)
-
-        if replaying:
-            index = st.session_state.game_path_index
-            last_index = len(st.session_state.game_path) - 1
-            st.caption(
-                f"{st.session_state.game_path_label} -- ply {index} of {last_index}",
-                help=_PLY_HELP,
-            )
-            # Stacked, not side by side, matching Reset/Undo's own layout
-            # below -- this column is too narrow for two buttons abreast.
-            # shortcut="Left"/"Right": a native st.button param (confirmed
-            # live, not assumed) that correctly stays out of the way while
-            # any text input has focus (arrow keys still move the text
-            # cursor normally there) but fires globally otherwise, so this
-            # needs no custom keyboard-handling component.
-            if st.button("Previous", shortcut="Left", disabled=index == 0):
-                st.session_state.game_path_index -= 1
-                st.session_state.board_generation += 1
-                st.rerun()
-            if st.button("Next", shortcut="Right", disabled=index == last_index):
-                st.session_state.game_path_index += 1
-                st.session_state.board_generation += 1
-                st.rerun()
-            if st.button("Exit replay"):
-                st.session_state.game_path = None
-                st.session_state.game_path_index = 0
-                st.session_state.game_path_label = None
-                st.session_state.board_generation += 1
-                st.rerun()
-        else:
-            if st.session_state.last_illegal_attempt is not None:
-                st.warning("That move isn't legal. Try again.")
-
-            # No more expander: it existed only to visually corral the old
-            # 8x8 click-grid the user found "ugly and disjointed", and with
-            # dragging directly on the board replacing that grid, these are
-            # core, expected board interactions, not something to hide
-            # behind a click.
-            if st.button("Reset board"):
-                st.session_state.board = chess.Board()
-                st.session_state.last_illegal_attempt = None
-                st.session_state.board_generation += 1
-                st.rerun()
-            if st.button("Undo last move", disabled=not current_board.move_stack):
-                current_board.pop()
-                st.session_state.board_generation += 1
-                st.rerun()
-
-    if st.button("Evaluate this position with Stockfish", type="primary", key="evaluate_position"):
-        st.session_state.pending_question = (
-            "Evaluate this chess position and tell me the best move. "
-            "Use the engine, don't just guess.",
-            current_board.fen(),
-        )
-        st.rerun()
-
-    # Narrower than the Evaluate button above it, not full board_col width --
-    # a single short question doesn't need the whole column, and the
-    # trailing empty column reads as intentional breathing room rather than
-    # a layout accident since Evaluate (a full-width primary action) is
-    # directly above it for contrast.
-    #
-    # Wrapped in st.container(key="position_question_form"), same reason
-    # tutorial_board_target wraps the board: st.form's own key= lands on
-    # its internal FormSubmitter button (confirmed live -- it renders as
-    # st-key-FormSubmitter-<form_key>-<button_label>), never on the form's
-    # own element, so tutorial_overlay's ".st-key-position_question_form"
-    # selector could never have matched anything. The form itself keeps a
-    # separate, unrelated key (Streamlit forbids two elements sharing one
-    # key in the same run).
-    form_col, _ = st.columns([3, 1])
-    with (
-        form_col,
-        st.container(key="position_question_form"),
-        st.form("position_question_form_widget", clear_on_submit=True),
-    ):
-        # placeholder (text inside the box), not the visible label above it
-        # -- matches the main chat_input's own look, which shows its
-        # prompt the same way. label_visibility="collapsed", not omitting
-        # the label entirely: a real label is still required for
-        # screen-reader accessibility, just not shown visually.
-        position_question = st.text_input(
-            "Ask about this position...",
-            placeholder="Ask about this position...",
-            label_visibility="collapsed",
-        )
-        asked = st.form_submit_button("Ask")
-    if asked and position_question:
-        st.session_state.pending_question = (position_question, current_board.fen())
-        st.rerun()
-
-    st.divider()
-    _render_resource_recommendations()
+        # Keyed so styles.py can tighten the default ~16px gap Streamlit puts
+        # between every element in this column. This column's natural content
+        # runs taller than the chat column's, making it the binding
+        # constraint on total page height -- see stMainBlockContainer's
+        # padding comment in styles.py for the rest of that budget.
+        render_board_panel()
+        # Composed here rather than called from inside the board panel: the
+        # recommendation cards are a separate concern that happens to share
+        # this column, and keeping the call here is what lets board_panel.py
+        # stay independent of the chat module it would otherwise import.
+        st.divider()
+        _render_resource_recommendations()
