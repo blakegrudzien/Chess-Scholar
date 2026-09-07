@@ -2,11 +2,11 @@
 
 A chess research assistant that routes every question across four independent backends: SQL statistics, semantic search over annotated commentary, a real chess engine, and structural game similarity, through the LLM's own native tool calling rather than a hand-rolled classifier or a RAG framework.
 
-[![CI](https://github.com/blakegrudzien/chess-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/blakegrudzien/chess-rag/actions/workflows/ci.yml)
+[![CI](https://github.com/blakegrudzien/Chess-Scholar/actions/workflows/ci.yml/badge.svg)](https://github.com/blakegrudzien/Chess-Scholar/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-**Live demo:** [chess-rag-blake.streamlit.app](https://chess-rag-blake.streamlit.app/)
+**Live demo:** [chess-scholar.streamlit.app](https://chess-scholar.streamlit.app/)
 
 ![Chess Scholar answering a strategic opening question by combining corpus statistics and annotation text](docs/screenshot.png)
 
@@ -108,8 +108,8 @@ Stated here deliberately rather than left to be discovered:
 ## Running locally
 
 ```bash
-git clone https://github.com/blakegrudzien/chess-rag.git
-cd chess-rag
+git clone https://github.com/blakegrudzien/Chess-Scholar.git
+cd Chess-Scholar
 pip install -e ".[dev]"
 cp .env.example .env   # fill in DATABASE_URL, ANTHROPIC_API_KEY, VOYAGE_API_KEY, STOCKFISH_PATH
 

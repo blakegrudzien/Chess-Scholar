@@ -33,7 +33,7 @@ LICHESS_BASE_URL = "https://lichess.org"
 # service, more so for lichess_scraper.py's undocumented HTML endpoints
 # than the documented API. The URL is this project's real public repo, not
 # a placeholder.
-USER_AGENT = "chess-rag/0.1.0 (+https://github.com/blakegrudzien/chess-rag)"
+USER_AGENT = "chess-scholar/0.1.0 (+https://github.com/blakegrudzien/Chess-Scholar)"
 
 # Lichess documents no fixed request-per-minute limit, just "one request at
 # a time" and a minute-long backoff on 429 -- these constants encode that

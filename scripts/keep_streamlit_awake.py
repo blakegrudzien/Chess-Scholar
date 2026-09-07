@@ -24,7 +24,7 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-APP_URL = "https://chess-rag-blake.streamlit.app/"
+APP_URL = "https://chess-scholar.streamlit.app/"
 # Generous: a cold start (container boot + corpus-adjacent imports) has been
 # observed taking upward of a minute in practice, not just a few seconds.
 MAX_WAIT_SECONDS = 120
