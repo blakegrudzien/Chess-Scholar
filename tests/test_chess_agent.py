@@ -6,7 +6,13 @@ import chess
 import psycopg2
 import pytest
 
-from src.agent.chess_agent import TOOL_LABELS, ask, build_tools
+from src.agent.chess_agent import (
+    MAX_CANDIDATE_MOVES,
+    MAX_SEARCH_LIMIT,
+    TOOL_LABELS,
+    ask,
+    build_tools,
+)
 from src.engine.engine_pool import EngineBusyError
 from src.engine.stockfish_eval import PositionEval
 from src.personalization.similarity import SimilarGame
@@ -171,6 +177,43 @@ def test_search_annotations_formats_bullets():
     assert "A sharp pawn grab." in result
 
 
+def test_search_annotations_reports_distance_alongside_each_result():
+    """The search always returns its closest chunks, even when nothing in the
+    corpus is genuinely on topic. Surfacing the distance is what lets the
+    model tell a strong match from the least-bad one and hedge accordingly,
+    rather than citing weak retrieval as though it were authoritative.
+    """
+    tools, _, _, _, _, _ = _build_tools()
+    chunks = [
+        ChunkResult(
+            text="Only loosely related.",
+            source_type="game_annotation",
+            game_id="abc",
+            source_title=None,
+            author=None,
+            year=2021,
+            eco_code="C51",
+            distance=0.87,
+        )
+    ]
+    with patch("src.agent.chess_agent.search_chunks", return_value=chunks):
+        result = tools["search_annotations"]("gambit")
+
+    assert "0.87" in result
+
+
+def test_search_annotations_clamps_an_oversized_limit():
+    """limit is chosen by the model from free text. Unclamped, one call can
+    return a result string large enough to blow out the context window it is
+    fed back into.
+    """
+    tools, _, conn, _, _, voyage_client = _build_tools()
+    with patch("src.agent.chess_agent.search_chunks", return_value=[]) as mock_fn:
+        tools["search_annotations"]("gambit", limit=5000)
+
+    mock_fn.assert_called_once_with(conn, voyage_client, "gambit", limit=MAX_SEARCH_LIMIT)
+
+
 def test_search_annotations_reports_no_results():
     tools, _, _, _, _, _ = _build_tools()
     with patch("src.agent.chess_agent.search_chunks", return_value=[]):
@@ -277,6 +320,29 @@ def test_compare_candidate_moves_reports_an_illegal_candidate_without_failing_th
 
     assert "e4: Evaluation: 12 centipawns" in result
     assert "e9: not legal in that position." in result
+
+
+def test_compare_candidate_moves_caps_an_oversized_candidate_list():
+    """Each candidate is a full engine search against a pool of only
+    ENGINE_POOL_SIZE engines, so an unbounded list from the model is a cost
+    borne by every other concurrent visitor. The excess is dropped rather
+    than evaluated, and reported so the model can ask for the rest instead of
+    silently believing it compared them all.
+    """
+    tools, _, _, _, _, _ = _build_tools()
+    position_eval = PositionEval(
+        fen="startpos", score_cp=12, mate_in=None, best_move_san="Nf6", pv_san=["Nf6"]
+    )
+    legal_first_moves = [move.uci()[2:] for move in chess.Board().legal_moves]
+    assert len(legal_first_moves) > MAX_CANDIDATE_MOVES
+
+    with patch(
+        "src.agent.chess_agent.evaluate_position", return_value=position_eval
+    ) as mock_evaluate:
+        result = tools["compare_candidate_moves"](chess.Board().fen(), legal_first_moves)
+
+    assert mock_evaluate.call_count == MAX_CANDIDATE_MOVES
+    assert "not evaluated" in result
 
 
 def test_compare_candidate_moves_rejects_invalid_starting_fen():
@@ -562,6 +628,55 @@ def test_ask_recovers_when_the_loop_ends_on_a_tool_call_with_no_synthesis():
     assert recovery_messages[-1]["role"] == "user"
     assert "complete answer now" in recovery_messages[-1]["content"]
     assert any("Recovering" in s for s in steps)
+
+
+def test_ask_recovers_when_the_loop_is_cut_off_on_a_tool_calling_turn():
+    """The loop can stop on a turn that made tool calls -- MAX_AGENT_TURNS is
+    enforced by tool_runner simply ending iteration, with no exception and no
+    signal. That turn's text is the one-sentence rationale the system prompt
+    asks for before a tool call, not an answer.
+
+    Recovering only on empty text is not enough: the rationale is non-empty,
+    so it would be returned as though it were the answer. That is what a user
+    sees as a long answer collapsing to a single sentence.
+    """
+    cut_off_turn = _stream_turn(
+        [
+            MagicMock(type="text", text="Checking Layer 1 for piece-placement stats."),
+            _tool_use_block("get_piece_placement"),
+        ]
+    )
+
+    client = MagicMock()
+    runner = MagicMock()
+    runner.__iter__.return_value = iter([cut_off_turn])
+    runner._params = {"messages": [{"role": "user", "content": "some question"}]}
+    client.beta.messages.tool_runner.return_value = runner
+    recovery_response = MagicMock()
+    recovery_response.content = [MagicMock(type="text", text="The full synthesized answer.")]
+    client.beta.messages.create.return_value = recovery_response
+
+    result = ask("some question", MagicMock(), MagicMock(), MagicMock(), client=client)
+
+    assert result == "The full synthesized answer."
+
+
+def test_ask_keeps_a_short_answer_from_a_genuine_synthesis_turn():
+    """The counterpart: a final turn with no tool calls is a real answer even
+    when brief. Recovery must not fire here, or every concise answer would
+    cost an extra model round trip.
+    """
+    final_turn = _stream_turn([MagicMock(type="text", text="Short but complete.")])
+
+    client = MagicMock()
+    runner = MagicMock()
+    runner.__iter__.return_value = iter([final_turn])
+    client.beta.messages.tool_runner.return_value = runner
+
+    result = ask("some question", MagicMock(), MagicMock(), MagicMock(), client=client)
+
+    assert result == "Short but complete."
+    client.beta.messages.create.assert_not_called()
 
 
 def test_ask_reports_model_rationale_via_on_step():

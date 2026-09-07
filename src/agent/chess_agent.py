@@ -50,6 +50,26 @@ MODEL = "claude-sonnet-5"
 # More headroom lowers the odds, doesn't eliminate them.
 MAX_TOKENS = 8192
 
+# Ceiling on tool-calling round trips for one question. The app is public
+# and unauthenticated, and every turn bills at least one Anthropic call --
+# without a ceiling, the only thing bounding a pathological loop is the
+# model's own judgment about when to stop. The rate limiter in the UI caps
+# requests per session, which is a different axis: one request can still fan
+# out into an unbounded number of turns.
+MAX_AGENT_TURNS = 10
+
+# Upper bounds on the numeric arguments the model supplies from free text.
+# Same reasoning as stockfish_eval.MAX_DEPTH, applied to the other axes a
+# caller can inflate: an unbounded `limit` returns a result string large
+# enough to blow out the context window it is fed back into, and an
+# unbounded candidate list runs that many full engine searches against a
+# pool of only src.ui.resources.ENGINE_POOL_SIZE engines. Values are
+# generous relative to what a real question needs, so clamping is invisible
+# in normal use and only bites on the pathological case.
+MAX_SEARCH_LIMIT = 20
+MAX_CANDIDATE_MOVES = 8
+MAX_PLY_WINDOW = 60
+
 SYSTEM_PROMPT = """You are a chess research assistant/mentor with access to a corpus \
 of grandmaster games, book/annotation text, and a chess engine, via tools.
 
@@ -87,8 +107,9 @@ evaluate_chess_position when judging whether a move or plan is good. In \
 your final answer, mark exactly where each diagram belongs by writing \
 [[diagram: <label>]] on its own line at that point, using the exact same \
 label text you passed to show_opening_line -- e.g. [[diagram: Main line]]. \
-Without this marker the diagram still appears, just at the end of your \
-answer instead of next to what it illustrates.
+A diagram is never visible before your final answer: it renders inside that \
+answer, at the marker, or at the end of it if you leave the marker out. \
+Never refer to a diagram as one the reader has already seen.
 
 Combine tools when a question calls for it (e.g. stats + commentary for an \
 opening-profile question). Be direct about which tool(s) you used.
@@ -103,14 +124,16 @@ plus the most relevant sidelines) is plenty; skip minor branches.
 
 Before calling a tool, state in one short sentence which layer you're using \
 and why -- e.g. "Checking Layer 2 for strategic ideas about isolated pawns." \
-This sentence is shown to the user live while they wait, then discarded -- \
-it never appears in the conversation transcript and is not part of your \
-answer. Put no analysis, explanation, or content here that the user needs \
-to actually see, or that you don't repeat in full later: only your final \
-text-only turn (the one with no tool call) is kept and shown as your \
-answer. If earlier tool calls surfaced something worth discussing -- a \
-line you looked up with show_opening_line, a stat, an evaluation -- say so \
-in that final turn, not only in an earlier one's rationale.
+Keep it to that one sentence. It is a progress label, not part of your \
+answer, and it is discarded once the tool call finishes.
+
+Your last turn -- the one that calls no tools -- is the entire answer, and \
+the only thing the reader is left with. Nothing you wrote in an earlier turn \
+survives, and the reader never sees any of it. So write that last turn as a \
+complete, standalone answer to the question, as though you had said nothing \
+before it: no "bottom line" or "in short" wrap-up of reasoning they cannot \
+see, and no referring back to an earlier turn. Every statistic, evaluation \
+and line that matters has to appear there in full, stated fresh.
 
 A user message may start with a line like "Current board position: <FEN>" -- \
 this means they set up that position on their own board and are asking about \
@@ -210,7 +233,11 @@ def build_tools(
         """
         try:
             results = _query(
-                piece_placement_frequency, eco_code, piece, color=color, max_ply=max_ply
+                piece_placement_frequency,
+                eco_code,
+                piece,
+                color=color,
+                max_ply=min(max_ply, MAX_PLY_WINDOW),
             )
         except ValueError as exc:
             return f"Invalid input: {exc}"
@@ -228,7 +255,7 @@ def build_tools(
             ply: Half-move number (1 = White's 1st move, 2 = Black's 1st move, etc.)
             limit: Max number of moves to return. Defaults to 5.
         """
-        results = _query(common_moves_at_ply, eco_code, ply, limit=limit)
+        results = _query(common_moves_at_ply, eco_code, ply, limit=min(limit, MAX_SEARCH_LIMIT))
         if not results:
             return f"No data at ply {ply} for ECO {eco_code}."
         return "; ".join(f"{r.move_san} ({r.count}x)" for r in results)
@@ -238,14 +265,20 @@ def build_tools(
         """Semantic search over human-written game annotations and book
         commentary for conceptual/strategic ideas, plans, and explanations.
 
+        Each result is prefixed with its cosine distance from the query
+        (0.0 = identical meaning, higher = less related). This search always
+        returns the closest chunks it has, even when nothing in the corpus
+        is genuinely on topic -- treat a high distance as weak evidence and
+        say so rather than presenting it as an authoritative source.
+
         Args:
             query: Natural-language description of the idea or concept to search for.
             limit: Max number of results. Defaults to 5.
         """
-        results = _query(search_chunks, voyage_client, query, limit=limit)
+        results = _query(search_chunks, voyage_client, query, limit=min(limit, MAX_SEARCH_LIMIT))
         if not results:
             return "No relevant annotations found."
-        return "\n".join(f"- {r.text}" for r in results)
+        return "\n".join(f"- [distance {r.distance:.2f}] {r.text}" for r in results)
 
     @beta_tool
     def evaluate_chess_position(fen: str, depth: int = DEFAULT_DEPTH) -> str:
@@ -288,6 +321,14 @@ def build_tools(
         except ValueError as exc:
             return f"Invalid FEN: {exc}"
 
+        # Each candidate is a full engine search against a pool of only
+        # ENGINE_POOL_SIZE engines, so an over-long list is a real cost to
+        # every other concurrent visitor, not just this request. Truncated
+        # rather than rejected, and reported below, so the model gets a
+        # usable answer plus the information it needs to ask again.
+        dropped = max(0, len(moves) - MAX_CANDIDATE_MOVES)
+        moves = moves[:MAX_CANDIDATE_MOVES]
+
         def _evaluate_one(move_san: str) -> str:
             candidate_board = base_board.copy()
             try:
@@ -310,6 +351,12 @@ def build_tools(
         # returned to the pool) instead.
         with ThreadPoolExecutor(max_workers=engine_pool.size) as executor:
             lines = list(executor.map(_evaluate_one, moves))
+        if dropped:
+            lines.append(
+                f"({dropped} further candidate(s) not evaluated -- this tool compares at "
+                f"most {MAX_CANDIDATE_MOVES} moves per call. Call it again for the rest "
+                f"if they still matter.)"
+            )
         return "\n".join(lines)
 
     @beta_tool
@@ -325,7 +372,12 @@ def build_tools(
             limit: Max number of similar games to return. Defaults to 5.
         """
         try:
-            results = _query(_find_similar_games, moves, max_ply=max_ply, limit=limit)
+            results = _query(
+                _find_similar_games,
+                moves,
+                max_ply=min(max_ply, MAX_PLY_WINDOW),
+                limit=min(limit, MAX_SEARCH_LIMIT),
+            )
         except ValueError as exc:
             return f"Invalid input: {exc}"
         if not results:
@@ -358,10 +410,22 @@ def build_tools(
             try:
                 board.push_san(san)
             except ValueError:
-                return f"'{san}' (move {i}) isn't legal in that sequence -- diagram not shown."
+                return f"'{san}' (move {i}) isn't legal in that sequence -- no diagram prepared."
         if on_position is not None:
             on_position(board.fen(), label=label, update_board=False)
-        return f"Shown: {label} ({' '.join(moves)})"
+        # Deliberately not phrased as "shown". The previous wording ("Shown:
+        # <label>") told the model the reader was already looking at the
+        # diagram, and it wrote its answer accordingly -- logged answers
+        # opened with "Both diagrams above illustrate..." and then only
+        # summarized, because from the model's point of view the substance
+        # had already been delivered. Nothing is visible to the reader until
+        # the final answer renders, so the tool result says exactly that.
+        return (
+            f"Diagram prepared for '{label}' ({' '.join(moves)}). The reader cannot see it "
+            f"yet. It appears only inside the answer you write, at the point where you put "
+            f"[[diagram: {label}]] -- so describe the position in full there rather than "
+            f"referring to it as something already shown."
+        )
 
     return [
         get_eco_summary,
@@ -528,6 +592,7 @@ def ask(
         tools=tools,
         messages=messages,
         stream=True,
+        max_iterations=MAX_AGENT_TURNS,
     )
 
     final_text = ""
@@ -555,17 +620,42 @@ def ask(
         if on_position is not None:
             _report_position_update(message, on_position)
         final_text = "".join(block.text for block in message.content if block.type == "text")
-    logger.info("ask() finished: %d turn(s), %.2fs total", turn_count, time.monotonic() - ask_start)
 
-    if not final_text.strip() and last_message is not None:
-        # Observed in practice, not just theoretically possible: the loop
-        # above can end without ever producing a clean text-only synthesis
-        # turn, even though tool_runner's own termination logic (read
-        # directly from its source) is only supposed to exit normally once
-        # generate_tool_call_response() finds no more tool calls to make --
-        # every other stop condition (a refusal, hitting max_iterations,
-        # which this app doesn't set) was checked and ruled out. Rather
-        # than silently return nothing, force one.
+    # A turn that made tool calls is not a synthesis turn. Its text is the
+    # one-sentence rationale the system prompt asks for before a tool call,
+    # so if the loop ended on one, final_text holds that sentence rather
+    # than an answer -- non-empty, but not the thing to show the user.
+    #
+    # The loop can end that way for two reasons. It hits MAX_AGENT_TURNS,
+    # which tool_runner enforces by simply stopping: no exception, no signal
+    # (see its _should_stop). Or it terminates early for a reason
+    # tool_runner doesn't surface, which has been observed even though its
+    # documented behavior is to exit only once no tool calls remain.
+    #
+    # Checking the last turn's tool calls, rather than only whether
+    # final_text is empty, is what separates "the model finished and said
+    # little" from "the model was cut off mid-work". The first is a
+    # legitimately short answer; the second returns a status line as though
+    # it were one.
+    interrupted_mid_work = last_message is not None and any(
+        block.type == "tool_use" for block in last_message.content
+    )
+    logger.info(
+        "ask() finished: %d turn(s), %.2fs total, final_text=%d chars, interrupted=%s",
+        turn_count,
+        time.monotonic() - ask_start,
+        len(final_text),
+        interrupted_mid_work,
+    )
+
+    if last_message is not None and (not final_text.strip() or interrupted_mid_work):
+        if interrupted_mid_work:
+            logger.warning(
+                "Loop ended on a tool-calling turn after %d turn(s) (ceiling is %d) -- "
+                "forcing a synthesis rather than returning that turn's rationale.",
+                turn_count,
+                MAX_AGENT_TURNS,
+            )
         if on_step is not None:
             on_step("Recovering an incomplete response...")
         final_text = _recover_synthesis(client, runner, on_chunk)
