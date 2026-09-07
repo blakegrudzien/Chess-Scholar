@@ -67,6 +67,15 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
+      # The playwright *package* comes from ".[dev]", but the browser binary
+      # is a separate download that pip cannot express. Without this step
+      # tests/test_board_component.py's availability check fails and all of
+      # its cases skip -- and a skip is not a failure, so CI stays green
+      # while the draggable board goes completely untested. Same failure
+      # mode the postgres service above exists to prevent for the DB tests.
+      - name: Install Playwright browser
+        run: playwright install --with-deps chromium
+
       - name: Lint
         run: ruff check .
 
@@ -76,5 +85,11 @@ jobs:
       - name: Check requirements.txt matches pyproject.toml
         run: python -m scripts.check_requirements_sync
 
+      # --cov, not a bare pytest run: pytest-cov is already a declared dev
+      # dependency, and measuring coverage is what makes a dropped test file
+      # or an untested new module visible instead of silently absent. No
+      # --cov-fail-under threshold yet -- a number picked to match today's
+      # coverage would only ratchet on accident; set one deliberately when
+      # there is a target worth holding to.
       - name: Test
-        run: pytest -v tests
+        run: pytest -v tests --cov=src --cov-report=term-missing

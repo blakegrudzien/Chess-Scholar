@@ -114,7 +114,8 @@ polish pass.
   (Layer 1/4 structured-search and similarity, the schema constraint tests,
   the study-index build test) need a local Postgres with pgvector -- CI
   provisions both automatically (`.github/workflows/ci.yml`'s `postgres`
-  service), so a passing CI run always exercises the real thing even when a
+  service and its `playwright install` step), so a passing CI run always
+  exercises the real thing even when a
   local run without Postgres set up doesn't.
 - `pip install -e ".[dev]" && playwright install chromium` — one-time setup for
   the real-browser board test (`tests/test_board_component.py`)
