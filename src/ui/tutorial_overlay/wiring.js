@@ -101,12 +101,11 @@ export default function (component) {
   // resources" only renders after the first chat exchange -- so a tour
   // opened before that must skip it, not crash or spotlight an empty rect.
   //
-  // Direction matters, not just "does this index resolve": Next always
-  // searches forward and Back always searches backward, so skipping a
-  // missing step never leaves a dead end where Back and Next both land on
-  // the same resolved step (confirmed live -- an earlier version of this
-  // function always searched forward regardless of which button was
-  // pressed, which is exactly what produced that stuck state).
+  // Direction matters, not just "does this index resolve": Next searches
+  // forward and Back searches backward, so skipping a missing step never
+  // leaves a dead end. Searching forward regardless of which button was
+  // pressed strands the tour on one step, with Back and Next both landing
+  // on the same resolved index.
   function findStep(start, direction) {
     let i = start;
     while (i >= 0 && i < steps.length) {

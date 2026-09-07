@@ -1,6 +1,6 @@
 """Generate the draggable board's piece image set as a JS data-URI map, so
 the piece art matches the chess.svg pieces used everywhere else in the app
-(the chat avatars, the old static board) instead of chessboard.js's stock
+(the chat avatars in particular) instead of chessboard.js's stock
 Wikipedia piece images.
 
 The custom Streamlit component's JS is passed to st.components.v2.component

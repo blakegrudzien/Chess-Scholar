@@ -71,8 +71,8 @@ _STEPS = [
     },
     {
         # Grayed out until eligible (see _render_resource_recommendations'
-        # own docstring) rather than absent -- unlike the old design, this
-        # selector always resolves, on a fresh page included.
+        # own docstring) rather than absent, so this selector always
+        # resolves, on a fresh page included.
         "selector": ".st-key-find_resources",
         "title": "Find related resources",
         "text": (
@@ -107,8 +107,8 @@ def render_tutorial_trigger() -> None:
     if "tutorial_launch_id" not in st.session_state:
         st.session_state.tutorial_launch_id = 0
 
-    # secondary, not tertiary -- tertiary renders as bare text with no
-    # border (confirmed live), which reads as a stray label rather than a
+    # secondary, not tertiary: tertiary renders as bare text with no
+    # border, which reads as a stray label rather than a
     # clickable control once it's sitting alone in the header with nothing
     # else nearby to anchor it. A bordered button matches Reset board/Undo
     # last move and every other secondary action already on the page.

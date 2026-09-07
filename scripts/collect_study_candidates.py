@@ -87,11 +87,10 @@ def collect_candidates(sort_counts: dict[str, int], output_path: Path) -> None:
     `existing` is written out in a finally block, not only on a clean
     exit, so an unexpected failure partway through (a transient network
     error, a Lichess response this code doesn't yet know how to handle)
-    loses only the work after the last write, not the whole run -- this
-    is not hypothetical: an earlier version crashed on a listing sort's
-    hard page-depth limit (see iter_studies_by_sort's own handling of
-    that specific case) and discarded an entire completed run's worth of
-    newly-fetched studies because nothing had been persisted yet.
+    loses only the work after the last write, not the whole run. The
+    concrete case this guards against is a listing sort's hard page-depth
+    limit (see iter_studies_by_sort's handling of it), which ends a run
+    partway through after real work has already been done.
     """
     existing = _load_existing_records(output_path)
     logger.info("Found %d existing candidates in %s", len(existing), output_path)

@@ -81,15 +81,12 @@ class EnginePool:
             # The subprocess itself died mid-use (crashed, was killed, hit
             # an internal fault) -- unlike every other exception a caller's
             # code might raise inside the `with` block, this one means the
-            # engine object is unusable now and forever. The old,
-            # unconditional `finally: self._available.put(engine)` handed
-            # this exact same broken engine to the next checkout(), which
-            # would fail identically on first use -- no test exercised
-            # this path, since nothing in this pool has ever actually
-            # simulated a mid-use crash. Respawn a replacement so the
-            # pool's advertised capacity (self.size, quoted directly in
-            # EngineBusyError's own message above) stays true rather than
-            # silently shrinking by one every time this happens.
+            # engine object is unusable now and forever. Returning it to
+            # the pool unconditionally would hand the same broken engine to
+            # the next checkout(), which fails identically on first use.
+            # Respawning a replacement keeps the pool's advertised capacity
+            # (self.size, quoted in EngineBusyError's message above) true
+            # rather than silently shrinking by one each time this happens.
             logger.warning("Engine process terminated during use; respawning a replacement.")
             try:
                 self._available.put(chess.engine.SimpleEngine.popen_uci(self._engine_path))

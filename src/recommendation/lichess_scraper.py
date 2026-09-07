@@ -182,10 +182,8 @@ def fetch_study_chapters(
     server-renders a `<script type="application/json" id="page-init-data">`
     block containing the same data the page's own JavaScript bootstraps
     from, including a full study.chapters list with real ids. No
-    authentication or websocket connection needed -- confirmed live against
-    a real study, whose 10 chapters (Introduction, Standart Scheme, Dragon
-    Accelerated, ...) all appeared with distinct 8-character ids in that
-    one block.
+    authentication or websocket connection needed: a study's full chapter
+    list, with distinct 8-character ids, is present in that one block.
 
     Returns an empty list if the page doesn't have the expected data block
     (unexpected markup, private/deleted study) rather than raising --
