@@ -43,7 +43,7 @@ supporting code already anticipate them, not because they're live features today
 
 ## Stack decisions (already made — don't re-ask)
 
-- **DB**: Postgres + pgvector, hosted on a free tier (Neon or Supabase) — need a
+- **DB**: PostgreSQL + pgvector, hosted on a free tier (Neon or Supabase) — need a
   live shareable demo link, not just local.
 - **LLM**: Anthropic Claude Sonnet 5 (`claude-sonnet-5`) as primary via native tool
   use / function calling. OpenAI is an acceptable fallback adapter, not primary.
@@ -112,10 +112,10 @@ polish pass.
   than failing when their dependency isn't set up locally: the draggable-board
   test needs Playwright/Chromium (see below), and several DB-backed tests
   (Layer 1/4 structured-search and similarity, the schema constraint tests,
-  the study-index build test) need a local Postgres with pgvector -- CI
+  the study-index build test) need a local PostgreSQL with pgvector -- CI
   provisions both automatically (`.github/workflows/ci.yml`'s `postgres`
   service and its `playwright install` step), so a passing CI run always
   exercises the real thing even when a
-  local run without Postgres set up doesn't.
+  local run without PostgreSQL set up doesn't.
 - `pip install -e ".[dev]" && playwright install chromium` — one-time setup for
   the real-browser board test (`tests/test_board_component.py`)

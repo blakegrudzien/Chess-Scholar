@@ -6,7 +6,7 @@ A chess research assistant that routes every question across four independent ba
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-**Live demo:** [chess-scholar.streamlit.app](https://chess-scholar.streamlit.app/)
+**Live demo:** [chess-scholar.streamlit.app](https://chess-scholar.streamlit.app/) — hosted on a free tier, so the first load can take up to 30 seconds while the container starts. A full answer takes another 20-30 seconds, since most questions make several tool calls and at least one real engine search.
 
 ![Chess Scholar answering a strategic opening question by combining corpus statistics and annotation text](docs/screenshot.png)
 
@@ -83,7 +83,7 @@ A few choices in this codebase were deliberate enough to be worth explaining rat
 - **Tool calling instead of a routing classifier.** An earlier design routed questions through a hand-tuned classifier before deciding which backend to query. It was dropped in favor of trusting the model's own tool-calling judgment, the same pattern used throughout Anthropic's own agent guidance: give the model well-described tools and let it decide, rather than building a second, weaker model whose only job is to imitate that decision.
 - **python-chess, not chessboard.js, is the source of truth for move legality.** The draggable board is a custom `st.components.v2` component wrapping chessboard.js purely as a visual and drag layer. Every drop is optimistically shown, then validated server-side against python-chess; an illegal drop snaps back with no separate JavaScript-side legality logic to keep in sync with the Python engine.
 - **A concurrent-evaluation tool, added after a real reported slowness.** Comparing several candidate moves used to mean one sequential Stockfish call per candidate, each a full model round trip. A `compare_candidate_moves` tool runs the candidates against a pool of engine subprocesses in parallel instead, cutting a multi-minute comparison down to roughly the cost of evaluating one move.
-- **Every external call that can fail, does get caught.** An unauthenticated app talking to three paid external APIs (Anthropic, Voyage, Lichess) plus a free-tier Postgres instance will eventually see a rate limit, a dropped connection, or a timeout. Those are caught explicitly and shown as a plain retry message, not a raw Python traceback (`showErrorDetails = "none"` in production, with full detail still reaching structured logs).
+- **Every external call that can fail, does get caught.** An unauthenticated app talking to three paid external APIs (Anthropic, Voyage, Lichess) plus a free-tier PostgreSQL instance will eventually see a rate limit, a dropped connection, or a timeout. Those are caught explicitly and shown as a plain retry message, not a raw Python traceback (`showErrorDetails = "none"` in production, with full detail still reaching structured logs).
 - **A session-local rate limit, not a global one.** Eight requests per minute per browser session, checked before a question ever reaches the model. It will not stop a determined attacker opening fresh sessions, but it does stop the far more likely case of a stuck retry or an accidental double-click, without penalizing every other concurrent visitor the way a shared counter would.
 
 ## Known limitations
@@ -102,7 +102,7 @@ Stated here deliberately rather than left to be discovered:
 |---|---|---|
 | LLM | Claude Sonnet 5, native tool calling | Primary reasoning and routing engine across all four layers |
 | Embeddings | Voyage AI `voyage-4` | Anthropic's recommended embeddings partner; Anthropic has no first-party embedding model |
-| Database | Postgres + pgvector (Neon) | One database for both relational corpus data and vector search, on a free tier that still supports a live public demo |
+| Database | PostgreSQL + pgvector (Neon) | One database for both relational corpus data and vector search, on a free tier that still supports a live public demo |
 | Engine | Stockfish via `python-chess` UCI integration | Ground-truth evaluation, pooled across subprocesses for concurrency |
 | Frontend | Streamlit | A draggable board component wraps chessboard.js as a custom `st.components.v2` component; everything else is server-rendered Streamlit |
 | Linting/formatting | ruff | One tool instead of a black/flake8/isort combination |
@@ -127,7 +127,7 @@ Master game annotations are exported from ChessBase 17 under the author's own li
 
 ## Testing
 
-253 tests, run against both Python 3.11 and 3.12 in CI. A handful require a local Postgres with pgvector and self-skip with a clear reason when one is not available; CI itself provisions both, so a passing build always exercises the real thing, including the database schema's own constraints, not just mocked versions of it.
+255 tests, run against both Python 3.11 and 3.12 in CI. A handful require a local PostgreSQL with pgvector and self-skip with a clear reason when one is not available; CI itself provisions both, so a passing build always exercises the real thing, including the database schema's own constraints, not just mocked versions of it.
 
 The suite leans toward regression tests for real, previously-reproduced bugs (a dropped database connection mid-session, a PGN upload malformed enough to crash a naive parser, a concurrent evaluation race) rather than only happy-path coverage.
 
