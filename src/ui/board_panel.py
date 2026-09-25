@@ -96,7 +96,7 @@ def game_status(board: chess.Board) -> str | None:
     return None
 
 
-def render_board_panel() -> None:
+def render_board_panel(*, disabled: bool = False) -> None:
     """A draggable board reflecting the position under discussion, plus a
     quick-eval button, Reset/Undo, and a free-text "ask about this position"
     form. While replaying a recommended game (st.session_state.game_path is
@@ -119,6 +119,13 @@ def render_board_panel() -> None:
     the submission -- and the live status/streaming UI it renders -- happens
     from the chat column on the next script pass rather than inside this
     narrow one. See chat._submit_question's docstring.
+
+    disabled=True renders every control inert and the board undraggable,
+    which the caller sets while an answer is generating. Any widget
+    interaction during a run cancels that run, and the agent call happens
+    inside one -- so a drag or a button press mid-answer would silently
+    discard the answer being generated. Disabling the controls is what makes
+    that unreachable rather than merely discouraged.
     """
     replaying = st.session_state.game_path is not None
     if replaying:
@@ -148,9 +155,9 @@ def render_board_panel() -> None:
                 current_board.fen(),
                 size=BOARD_SIZE_PX,
                 generation=st.session_state.board_generation,
-                draggable=not replaying,
+                draggable=not replaying and not disabled,
             )
-        if drop is not None and not replaying:
+        if drop is not None and not replaying and not disabled:
             _attempt_move(drop["from"], drop["to"])
             st.rerun()
 
@@ -180,15 +187,15 @@ def render_board_panel() -> None:
             # it stays out of the way while a text input has focus (arrow
             # keys still move the text cursor there) and fires globally
             # otherwise, so replay navigation needs no keyboard component.
-            if st.button("Previous", shortcut="Left", disabled=index == 0):
+            if st.button("Previous", shortcut="Left", disabled=disabled or index == 0):
                 st.session_state.game_path_index -= 1
                 st.session_state.board_generation += 1
                 st.rerun()
-            if st.button("Next", shortcut="Right", disabled=index == last_index):
+            if st.button("Next", shortcut="Right", disabled=disabled or index == last_index):
                 st.session_state.game_path_index += 1
                 st.session_state.board_generation += 1
                 st.rerun()
-            if st.button("Exit replay"):
+            if st.button("Exit replay", disabled=disabled):
                 st.session_state.game_path = None
                 st.session_state.game_path_index = 0
                 st.session_state.game_path_label = None
@@ -203,17 +210,22 @@ def render_board_panel() -> None:
             elif st.session_state.last_illegal_attempt is not None:
                 st.warning("That move isn't legal. Try again.")
 
-            if st.button("Reset board"):
+            if st.button("Reset board", disabled=disabled):
                 st.session_state.board = chess.Board()
                 st.session_state.last_illegal_attempt = None
                 st.session_state.board_generation += 1
                 st.rerun()
-            if st.button("Undo last move", disabled=not current_board.move_stack):
+            if st.button("Undo last move", disabled=disabled or not current_board.move_stack):
                 current_board.pop()
                 st.session_state.board_generation += 1
                 st.rerun()
 
-    if st.button("Evaluate this position with Stockfish", type="primary", key="evaluate_position"):
+    if st.button(
+        "Evaluate this position with Stockfish",
+        type="primary",
+        key="evaluate_position",
+        disabled=disabled,
+    ):
         st.session_state.pending_question = (
             "Evaluate this chess position and tell me the best move. "
             "Use the engine, don't just guess.",
@@ -247,7 +259,7 @@ def render_board_panel() -> None:
             placeholder="Ask about this position...",
             label_visibility="collapsed",
         )
-        asked = st.form_submit_button("Ask")
+        asked = st.form_submit_button("Ask", disabled=disabled)
     if asked and position_question:
         st.session_state.pending_question = (position_question, current_board.fen())
         st.rerun()

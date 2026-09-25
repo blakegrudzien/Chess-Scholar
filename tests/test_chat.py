@@ -432,6 +432,10 @@ def test_describe_uploaded_game_shows_a_friendly_error_for_a_header_delimiter_co
     this fix nothing caught it, so a player name containing "|" crashed
     the whole script instead of showing the same honest message a
     genuinely unparseable file already gets.
+
+    The message is returned rather than rendered: a successful upload is
+    followed by a rerun that would discard anything drawn here, so the
+    caller owns when to show it.
     """
     at = AppTest.from_string('''
 class _FakeUpload:
@@ -456,8 +460,72 @@ st.session_state["_result"] = _describe_uploaded_game(_FakeUpload(pgn), "")
 ''')
     at.run()
     assert not at.exception
-    assert at.session_state["_result"] is None
-    assert any("couldn't find a game" in e.value.lower() for e in at.error)
+    question, notices = at.session_state["_result"]
+    assert question is None
+    assert any(
+        level == "error" and "couldn't find a game" in message.lower() for level, message in notices
+    )
+
+
+def test_describe_uploaded_game_rejects_a_file_with_no_moves():
+    """python-chess returns a Game for input containing no chess at all --
+    a text file of prose parses into a game with zero moves. Checking only
+    that a game came back let a non-PGN upload reach the model as an empty
+    move list, spending a request to answer nothing.
+    """
+    at = AppTest.from_string("""
+class _FakeUpload:
+    def __init__(self, text):
+        self._text = text
+
+    def getvalue(self):
+        return self._text.encode("utf-8")
+
+from src.ui.chat import _describe_uploaded_game
+import streamlit as st
+st.session_state["_result"] = _describe_uploaded_game(
+    _FakeUpload("this is not a chess game, just some prose"), ""
+)
+""")
+    at.run()
+    assert not at.exception
+    question, notices = at.session_state["_result"]
+    assert question is None
+    assert any("couldn't find a game" in message.lower() for _, message in notices)
+
+
+def test_describe_uploaded_game_warns_when_moves_were_truncated():
+    """A movetext error stops the parse there, so the moves that survive are
+    a prefix of the real game. Analyzing part of someone's game without
+    saying so is the same silent data loss the multiple-games case already
+    warns about.
+    """
+    at = AppTest.from_string('''
+class _FakeUpload:
+    def __init__(self, text):
+        self._text = text
+
+    def getvalue(self):
+        return self._text.encode("utf-8")
+
+pgn = """[Event "Test"]
+[White "A"]
+[Black "B"]
+
+1. e4 e5 2. Ke2 Zz9 3. Qh5
+"""
+
+from src.ui.chat import _describe_uploaded_game
+import streamlit as st
+st.session_state["_result"] = _describe_uploaded_game(_FakeUpload(pgn), "")
+''')
+    at.run()
+    assert not at.exception
+    question, notices = at.session_state["_result"]
+    assert question is not None  # the valid prefix is still worth analyzing
+    assert any(
+        level == "warning" and "couldn't be read" in message.lower() for level, message in notices
+    )
 
 
 def test_submit_question_logs_the_real_conversation_for_later_eval_review():

@@ -250,7 +250,7 @@ def ask_with_status(
     return answer, touched_fens
 
 
-def _render_resource_recommendations() -> None:
+def _render_resource_recommendations(*, disabled: bool = False) -> None:
     """Offers to look up related Lichess studies and corpus games for the
     most recent question, and renders whatever comes back. Only shown for
     the latest exchange, not every past one in the history.
@@ -276,7 +276,7 @@ def _render_resource_recommendations() -> None:
             "Find related resources",
             key="find_resources",
             type="secondary",
-            disabled=not eligible,
+            disabled=disabled or not eligible,
         )
         if not eligible:
             st.caption("Ask something first, then look here for related studies and games.")
@@ -381,7 +381,9 @@ def _game_path_from_pgn(pgn: str) -> list[str] | None:
     return path
 
 
-def _describe_uploaded_game(uploaded_file, user_text: str) -> str | None:
+def _describe_uploaded_game(
+    uploaded_file, user_text: str
+) -> tuple[str | None, list[tuple[str, str]]]:
     """Turn a PGN attached to the chat input (see render_main_screen's
     accept_file=True) into the model-facing question text for Layer 4's
     find_similar_corpus_games: a plain-language description of the game's
@@ -389,9 +391,12 @@ def _describe_uploaded_game(uploaded_file, user_text: str) -> str | None:
     sensible default question if they attached the file with no message
     of its own.
 
-    Returns None (after showing st.error itself, since this always runs
-    right before a rerun -- there's no later point a caller could still
-    surface the message) if the file has no parseable game.
+    Returns (question, notices). question is None when the file holds no
+    usable game; notices are (level, text) pairs the caller is responsible
+    for showing. They are returned rather than rendered here because a
+    successful upload is followed immediately by a rerun, which would
+    discard anything this function had drawn -- so the caller stashes them
+    and renders them on the run that shows the answer.
     """
     # Initialized before the write, not inside it: if the write itself
     # fails, the finally below still has a defined name to check instead of
@@ -422,24 +427,42 @@ def _describe_uploaded_game(uploaded_file, user_text: str) -> str | None:
         # poking at the upload feature might hit. The same honest message
         # used below for a genuinely unparseable file already covers this
         # case too; no need for a second, more specific one.
-        st.error("Couldn't find a game in that file.")
-        return None
+        return None, [("error", "Couldn't find a game in that file.")]
     finally:
         if tmp_path is not None:
             os.unlink(tmp_path)
 
-    if not first_two_games:
-        st.error("Couldn't find a game in that file.")
-        return None
-    if len(first_two_games) > 1:
-        st.info("This file has more than one game. Only the first is analyzed.")
+    # Both halves of this check matter. python-chess returns a Game object
+    # for input containing no chess at all -- a text file of prose parses
+    # "successfully" into a game with zero moves -- so testing only whether
+    # a game came back lets a non-PGN upload through to the model as an
+    # empty move list, costing a request and producing a meaningless answer.
+    if not first_two_games or not first_two_games[0].moves:
+        return None, [("error", "Couldn't find a game in that file.")]
 
-    move_sans = [m.move_san for m in first_two_games[0].moves]
+    notices: list[tuple[str, str]] = []
+    if len(first_two_games) > 1:
+        notices.append(("info", "This file has more than one game. Only the first is analyzed."))
+
+    game = first_two_games[0]
+    move_sans = [m.move_san for m in game.moves]
+    # A movetext error stops the parse at that point, so the moves above are
+    # a prefix of the real game. Said out loud for the same reason the
+    # multiple-games case is: analyzing part of someone's game without
+    # telling them is worse than analyzing it and saying so.
+    if game.parse_errors:
+        notices.append(
+            (
+                "warning",
+                f"Some moves in that file couldn't be read, so only the first "
+                f"{len(move_sans)} are analyzed.",
+            )
+        )
     game_description = (
         f"Here is a game I uploaded, as a list of moves in order: {', '.join(move_sans)}."
     )
     if user_text.strip():
-        return f"{game_description} {user_text}"
+        return f"{game_description} {user_text}", notices
     # No message of their own to go on, so this default has to name a
     # length -- unlike a typed question, which already implies "answer
     # this much and stop", a bare upload gives the model nothing to
@@ -448,7 +471,7 @@ def _describe_uploaded_game(uploaded_file, user_text: str) -> str | None:
     return (
         f"{game_description} Find similar games in the corpus and give me a brief, "
         "illustrative comparison -- a few sentences, not a full report."
-    )
+    ), notices
 
 
 DIAGRAM_SIZE_PX = 180
@@ -585,7 +608,7 @@ def _build_message_history() -> list[dict[str, str]]:
     ]
 
 
-def _submit_question(question: str, *, fen_context: str | None = None) -> None:
+def _submit_question(question: str, *, fen_context: str | None = None) -> bool:
     """Append a user turn, get the agent's answer, and append it -- the one
     path both the main chat input and the board-side "ask about this
     position" box go through, so a follow-up question either way lands in
@@ -612,6 +635,12 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
     branch below so a throttled request never reaches ask_with_status and
     never touches chat_history -- a rejected question shouldn't appear in
     the transcript as if it had been asked and silently ignored.
+
+    Returns whether the question was actually submitted. False means the
+    rate limiter rejected it and drew a warning, which the caller must not
+    follow with a rerun -- doing so wipes the warning off the screen before
+    anyone reads it, leaving a throttled question looking like it silently
+    did nothing.
     """
     now = time.monotonic()
     request_times = st.session_state.setdefault("request_times", [])
@@ -621,7 +650,7 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
             "You're asking questions faster than this demo can keep up with -- "
             "try again in a moment."
         )
-        return
+        return False
     request_times.append(now)
 
     history = _build_message_history()  # prior turns, before this one is appended below
@@ -639,6 +668,7 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> None:
     # See conversation_log.log_conversation_best_effort's own docstring:
     # it guarantees on its own that a logging failure can't reach here.
     log_conversation_best_effort(get_db_pool(), question, fen_context, answer)
+    return True
 
 
 def _render_example_prompts() -> None:
@@ -706,6 +736,8 @@ def render_main_screen() -> None:
         st.session_state.last_illegal_attempt = None
     if "pending_question" not in st.session_state:
         st.session_state.pending_question = None
+    if "pending_notices" not in st.session_state:
+        st.session_state.pending_notices = []
     if "board_generation" not in st.session_state:
         st.session_state.board_generation = 0
     if "game_path" not in st.session_state:
@@ -716,6 +748,32 @@ def render_main_screen() -> None:
         st.session_state.game_path_label = None
 
     chat_col, board_col = st.columns([3, 2])
+
+    # True while an answer is being generated: pending_question is set on the
+    # run that submits, and cleared by the run that actually calls the agent.
+    generating = st.session_state.pending_question is not None
+
+    # board_col is rendered before chat_col even though it sits to the right.
+    # st.columns fixes the visual order when the columns are created, so the
+    # order of these `with` blocks only decides what reaches the browser
+    # first -- and that matters here. The agent call blocks inside chat_col,
+    # so anything rendered after it does not appear until the answer is
+    # finished; the board the user sees during that wait would be the
+    # previous run's, still fully interactive. Rendering it first means the
+    # disabled board is on screen for the whole generation.
+    with board_col, st.container(key="board_panel"):
+        # Keyed so styles.py can tighten the default ~16px gap Streamlit puts
+        # between every element in this column. This column's natural content
+        # runs taller than the chat column's, making it the binding
+        # constraint on total page height -- see stMainBlockContainer's
+        # padding comment in styles.py for the rest of that budget.
+        render_board_panel(disabled=generating)
+        # Composed here rather than called from inside the board panel: the
+        # recommendation cards are a separate concern that happens to share
+        # this column, and keeping the call here is what lets board_panel.py
+        # stay independent of the chat module it would otherwise import.
+        st.divider()
+        _render_resource_recommendations(disabled=generating)
 
     with chat_col:
         # A fixed-height, internally scrolling panel, not chat_input's own
@@ -741,11 +799,27 @@ def render_main_screen() -> None:
                     if fen is not None:
                         st.caption(f"Position: `{fen}`", help=FEN_HELP)
 
+            # An answer is lost whenever the run generating it is cancelled,
+            # which any widget interaction does -- the Stop button included,
+            # since that is the mechanism it works by. The user turn was
+            # already appended before the agent call, so what survives is a
+            # question with no reply and no explanation. Saying so is the
+            # difference between a visibly interrupted answer and one that
+            # looks like the app silently failed.
+            history = st.session_state.chat_history
+            if history and history[-1][0] == "user" and not generating:
+                st.info("That answer was interrupted before it finished. Ask again to retry.")
+
             pending = st.session_state.pending_question
             if pending is not None:
+                # Upload notices raised on the submitting run, shown here on
+                # the run that renders the answer they apply to.
+                for level, message in st.session_state.pending_notices:
+                    getattr(st, level)(message)
+                st.session_state.pending_notices = []
                 st.session_state.pending_question = None
                 pending_question, pending_fen = pending
-                _submit_question(pending_question, fen_context=pending_fen)
+                submitted = _submit_question(pending_question, fen_context=pending_fen)
                 # Rerun rather than let this script run fall through to the
                 # code below: chat_history was still empty at the `if not
                 # st.session_state.chat_history:` check above (it's ABOVE
@@ -753,7 +827,12 @@ def render_main_screen() -> None:
                 # once this run despite chat_history being non-empty now --
                 # a fresh rerun starts over with chat_history correctly
                 # non-empty from the start, so that check skips it.
-                st.rerun()
+                #
+                # Skipped when the rate limiter rejected the question: there
+                # is no new message to re-render, and rerunning would erase
+                # the warning it just drew.
+                if submitted:
+                    st.rerun()
 
         submission = st.chat_input(
             "Ask about openings, positions, or chess history...",
@@ -769,24 +848,27 @@ def render_main_screen() -> None:
         st.caption("Questions and answers are saved to help improve this demo.")
         if submission is not None:
             question = None
+            notices: list[tuple[str, str]] = []
             if submission.files:
-                question = _describe_uploaded_game(submission.files[0], submission.text)
-            elif submission.text:
+                question, notices = _describe_uploaded_game(submission.files[0], submission.text)
+                if question is None:
+                    # No rerun follows a rejected upload, so these are shown
+                    # now; anything else is stashed for the run that reruns.
+                    for level, message in notices:
+                        getattr(st, level)(message)
+            elif submission.text.strip():
+                # .strip(): a whitespace-only submission is truthy, and used
+                # to reach the agent, which had nothing to answer and
+                # returned the generic "something interrupted this response"
+                # fallback -- blaming the app for an empty question, and
+                # paying for a request to do it.
                 question = submission.text
             if question is not None:
-                with message_panel:
-                    _submit_question(question)
-
-    with board_col, st.container(key="board_panel"):
-        # Keyed so styles.py can tighten the default ~16px gap Streamlit puts
-        # between every element in this column. This column's natural content
-        # runs taller than the chat column's, making it the binding
-        # constraint on total page height -- see stMainBlockContainer's
-        # padding comment in styles.py for the rest of that budget.
-        render_board_panel()
-        # Composed here rather than called from inside the board panel: the
-        # recommendation cards are a separate concern that happens to share
-        # this column, and keeping the call here is what lets board_panel.py
-        # stay independent of the chat module it would otherwise import.
-        st.divider()
-        _render_resource_recommendations()
+                # Stashed and rerun rather than submitted here, matching the
+                # board-side triggers. The board is rendered before this
+                # column, so it is only drawn in its disabled state on a run
+                # that already knows a question is pending -- which is the
+                # run this rerun creates.
+                st.session_state.pending_question = (question, None)
+                st.session_state.pending_notices = notices
+                st.rerun()

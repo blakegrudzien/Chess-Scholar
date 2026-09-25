@@ -50,6 +50,13 @@ class GameRecord:
     result: str | None
     source: str
     moves: list[MoveRecord] = field(default_factory=list)
+    # How many movetext errors python-chess reported while reading this
+    # game. Non-zero means the game was truncated at the first bad move and
+    # `moves` holds only the prefix that parsed. Ingestion doesn't act on
+    # this -- a corpus export is trusted -- but an uploaded file is not, and
+    # the UI needs to be able to tell the user their game was cut short
+    # rather than silently analyzing a fragment of it.
+    parse_errors: int = 0
 
 
 # Modern chess rules (as opposed to earlier regional variants) date to
@@ -185,6 +192,7 @@ def parse_game(
         result=headers.get("Result"),
         source=source,
         moves=moves,
+        parse_errors=len(game.errors),
     )
 
 
