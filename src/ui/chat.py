@@ -250,6 +250,37 @@ def ask_with_status(
     return answer, touched_fens
 
 
+# How much of the answer to pass along as context for the resource lookup.
+# Enough to carry the topic -- an answer names the opening in its opening
+# lines -- without sending several thousand characters for the recommendation
+# agent to re-read on every click.
+ANSWER_CONTEXT_CHARS = 1200
+
+
+def _lookup_context(history: list) -> str:
+    """What the resource lookup should treat as "the question".
+
+    Not just the typed text. A question asked from the board is usually
+    contentless on its own -- "how should White play here?" -- with the
+    actual subject living in the FEN beside it and in the answer that came
+    back. Searching a study library for that bare sentence matches nothing,
+    which surfaced as "nothing was a close enough match" for every
+    board-asked question while typed ones worked fine.
+
+    So this rebuilds the turn the way the chat agent saw it (question plus
+    its board position, via _to_model_text) and appends the opening of the
+    answer, which is where the opening actually gets named -- "this is the
+    Dutch Defense, ECO A80" is the search term that finds a Dutch study,
+    and nothing in the user's own words contains it.
+    """
+    _, question, fen_context, _ = history[-2]
+    lookup = _to_model_text(question, fen_context)
+    answer = history[-1][1]
+    if answer:
+        lookup += f"\n\nThe answer given was:\n{answer[:ANSWER_CONTEXT_CHARS]}"
+    return lookup
+
+
 def _render_resource_recommendations(*, disabled: bool = False) -> None:
     """Offers to look up related Lichess studies and corpus games for the
     most recent question, and renders whatever comes back. Only shown for
@@ -283,7 +314,7 @@ def _render_resource_recommendations(*, disabled: bool = False) -> None:
             return
         if not clicked:
             return
-        question = history[-2][1]
+        question = _lookup_context(history)
         # Doherty threshold: this regularly takes 20+ seconds, past the
         # point where a bare spinner keeps people's attention. A static but
         # honest description of the stages involved, not live progress --

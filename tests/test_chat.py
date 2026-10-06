@@ -528,6 +528,43 @@ st.session_state["_result"] = _describe_uploaded_game(_FakeUpload(pgn), "")
     )
 
 
+def test_lookup_context_carries_the_board_position_and_the_answer():
+    """A question asked from the board carries almost no information on its
+    own -- the subject lives in the FEN beside it and in the answer that came
+    back. Searching the study library for the bare sentence matched nothing,
+    so every board-asked question reported "nothing was a close enough
+    match" while typed questions worked.
+    """
+    from src.ui.chat import _lookup_context
+
+    fen = "rnbqkbnr/ppppp1pp/8/5p2/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2"
+    history = [
+        ("user", "How can white play in this position?", fen, []),
+        ("assistant", "This position (1.d4 f5) is the Dutch Defense -- ECO A80.", None, []),
+    ]
+
+    lookup = _lookup_context(history)
+
+    assert "How can white play in this position?" in lookup
+    assert fen in lookup  # the board position the question was about
+    assert "Dutch Defense" in lookup  # the topic, which only the answer names
+
+
+def test_lookup_context_handles_a_question_with_no_board_position():
+    from src.ui.chat import _lookup_context
+
+    history = [
+        ("user", "What is the Sicilian Defense?", None, []),
+        ("assistant", "A reply to 1.e4 with 1...c5.", None, []),
+    ]
+
+    lookup = _lookup_context(history)
+
+    assert "What is the Sicilian Defense?" in lookup
+    assert "Current board position" not in lookup
+    assert "A reply to 1.e4 with 1...c5." in lookup
+
+
 def test_submit_question_logs_the_real_conversation_for_later_eval_review():
     """_submit_question is the one path every question submission goes
     through (main chat input, example prompts, and the board-side ask
