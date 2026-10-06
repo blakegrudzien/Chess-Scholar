@@ -24,6 +24,7 @@ native tool schemas over parsing free text.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -43,15 +44,28 @@ from src.search.structured_search import (
     select_narrative_game,
 )
 
+logger = logging.getLogger(__name__)
+
 MODEL = "claude-sonnet-5"
 MAX_TOKENS = 2048
 
 # Ceiling on tool-calling round trips for one lookup, for the same reason
 # chess_agent.MAX_AGENT_TURNS exists: this runs behind a button on a public,
 # unauthenticated app and chains Anthropic, Voyage, and live Lichess HTTP
-# calls per turn. Lower than the chat agent's ceiling because this task is
-# narrower -- search, list chapters, record one or two recommendations.
-MAX_AGENT_TURNS = 6
+# calls per turn.
+#
+# Sized against the work this task actually takes, not against how simple it
+# sounds. The shortest path that produces anything is already five turns --
+# search studies, list one study's chapters, record it, find a corpus game,
+# record that -- and the model realistically lists chapters for several
+# studies before choosing one, since the chapter names are the only way to
+# tell which study is actually on topic. A ceiling of 6 left no room for any
+# of that: the loop was spending every turn exploring and getting cut off
+# before it ever called a recommend_* tool, so the feature returned nothing
+# at all for ordinary questions. Headroom here is cheap -- each turn is one
+# small, capped request -- and running out produces silence rather than a
+# visible error, which is the expensive failure.
+MAX_AGENT_TURNS = 14
 
 SYSTEM_PROMPT = """You help decide whether any external resources are worth \
 recommending alongside an answer to a chess question.
@@ -282,10 +296,26 @@ def recommend_resources(
         max_iterations=MAX_AGENT_TURNS,
     )
     # The recommendations are collected in `state` by the tools themselves,
-    # so the loop only needs to drive the runner to completion. Hitting the
-    # iteration ceiling is not an error here: whatever was recorded before
-    # the ceiling is still a valid (possibly empty) result.
+    # so the loop only needs to drive the runner to completion.
+    turns = 0
     for _ in runner:
-        pass
+        turns += 1
+
+    # An empty result is a legitimate answer -- often nothing in the pool is
+    # a close enough match -- and the UI says so. But it reads identically to
+    # the loop being cut off mid-search before it recorded anything, which is
+    # a bug and not something the user should be told was "no close match".
+    # Logged so the two are distinguishable without reproducing by hand.
+    if turns >= MAX_AGENT_TURNS and not state.recommendations:
+        logger.warning(
+            "Recommendation lookup hit the %d-turn ceiling with nothing recorded -- "
+            "the model ran out of turns while searching rather than finding no match.",
+            MAX_AGENT_TURNS,
+        )
+    logger.info(
+        "recommend_resources: %d turn(s), %d recommendation(s)",
+        turns,
+        len(state.recommendations),
+    )
 
     return state.recommendations
