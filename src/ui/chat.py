@@ -702,7 +702,7 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> bool:
     return True
 
 
-def _render_example_prompts() -> None:
+def _render_example_prompts(*, disabled: bool = False) -> None:
     """Shown only on an empty conversation (render_main_screen checks
     chat_history before calling this) -- teaches the chat's actual range by
     demonstration, one example per layer/feature. Clicking one submits it,
@@ -730,7 +730,7 @@ def _render_example_prompts() -> None:
         "Where does White's knight usually end up in the Najdorf?",
     ]
     for i, example in enumerate(examples):
-        if st.button(example, key=f"example_prompt_{i}", width="stretch"):
+        if st.button(example, key=f"example_prompt_{i}", width="stretch", disabled=disabled):
             st.session_state.pending_question = (example, None)
             st.rerun()
 
@@ -820,7 +820,10 @@ def render_main_screen() -> None:
         message_panel = st.container(height=MESSAGE_PANEL_HEIGHT_PX, border=True, key="chat_panel")
         with message_panel:
             if not st.session_state.chat_history:
-                _render_example_prompts()
+                # Still drawn on the run that generates the first answer
+                # (chat_history is only appended inside that run), so they
+                # are disabled then: a click would cancel the answer.
+                _render_example_prompts(disabled=generating)
             for role, content, fen, image_fens in st.session_state.chat_history:
                 with st.chat_message(role, avatar=_CHAT_AVATARS[role]):
                     if role == "assistant":
@@ -866,7 +869,7 @@ def render_main_screen() -> None:
                     st.rerun()
 
         submission = st.chat_input(
-            "Ask about openings, positions, or chess history...",
+            "Ask a chess question...",
             accept_file=True,
             file_type=["pgn"],
         )

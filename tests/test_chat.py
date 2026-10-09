@@ -332,6 +332,19 @@ _render_example_prompts()
     assert len(labels) == 4  # one example per layer/feature
 
 
+def test_example_prompts_are_disabled_while_an_answer_generates():
+    """Clicking an example mid-answer would cancel the answer being
+    generated, since any widget interaction cancels the running script."""
+    at = AppTest.from_string("""
+from src.ui.chat import _render_example_prompts
+_render_example_prompts(disabled=True)
+""")
+    at.run()
+    assert not at.exception
+    assert len(at.button) == 4
+    assert all(b.disabled for b in at.button)
+
+
 def test_clicking_an_example_prompt_stashes_it_as_a_pending_question():
     """Regression test for a real, reproduced bug: _render_example_prompts
     used to call _submit_question directly from inside its button's if-
