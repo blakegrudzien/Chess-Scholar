@@ -31,9 +31,14 @@ export default function (component) {
   boardContainer.style.width = `${size}px`;
   parentElement.appendChild(boardContainer);
 
+  // On touch-first devices a drag starting on the board scrolls the page
+  // instead of moving the piece, so those get tap-to-move: tap a piece,
+  // then tap its destination. Desktop keeps dragging.
+  const tapToMove = draggable && window.matchMedia("(pointer: coarse)").matches;
+
   const board = window.Chessboard(boardContainer, {
     position: fen,
-    draggable,
+    draggable: draggable && !tapToMove,
     pieceTheme: (piece) => CHESS_RAG_PIECE_IMAGES[piece],
     onDrop: (source, target) => {
       if (source === target) return;
@@ -41,5 +46,44 @@ export default function (component) {
     },
   });
 
-  return () => board.destroy();
+  if (!tapToMove) return () => board.destroy();
+
+  // chessboard.js's own highlight for a dragged piece's square, reused so
+  // a tapped selection looks the same as a drag in progress.
+  const SELECTED_CLASS = "highlight1-32417";
+  const sideToMove = fen.split(" ")[1]; // "w" or "b"
+  let selected = null;
+
+  const squareElement = (square) => boardContainer.querySelector(`[data-square="${square}"]`);
+  const select = (square) => {
+    if (selected) squareElement(selected)?.classList.remove(SELECTED_CLASS);
+    selected = square;
+    if (square) squareElement(square)?.classList.add(SELECTED_CLASS);
+  };
+
+  // Tapping the selected piece deselects it, tapping another piece of the
+  // side to move switches to it, and any other tap with a piece selected is
+  // sent to Python as a move, the same {from, to} a drag produces. Legality
+  // stays in python-chess: an unreachable square comes back as an illegal
+  // move, and the rerun remounts the board with nothing selected.
+  const onTap = (event) => {
+    const square = event.target.closest("[data-square]")?.dataset.square;
+    if (!square) return;
+    const piece = board.position()[square]; // e.g. "wP", or undefined if empty
+    if (square === selected) {
+      select(null);
+    } else if (piece && piece[0] === sideToMove) {
+      select(square);
+    } else if (selected) {
+      const from = selected;
+      select(null);
+      setTriggerValue("drop", { from, to: square });
+    }
+  };
+  boardContainer.addEventListener("click", onTap);
+
+  return () => {
+    boardContainer.removeEventListener("click", onTap);
+    board.destroy();
+  };
 }

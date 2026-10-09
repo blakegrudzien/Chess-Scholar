@@ -503,6 +503,12 @@ button[data-testid="stMainMenuButton"] {
         min-height: 0;
         padding: 6px !important;
     }
+    /* Streamlit sizes the panel's wrapper with flex: 0 0 560px, and in a
+       column flex container flex-basis wins over height, so height: auto
+       alone left 560px reserved below a shorter panel. */
+    div[data-testid="stLayoutWrapper"]:has(> .st-key-chat_panel) {
+        flex: 0 0 auto !important;
+    }
     /* The avatar sits on its own line above each message instead of
        beside it, giving the text the full width of a narrow screen. */
     div[data-testid="stChatMessage"] {

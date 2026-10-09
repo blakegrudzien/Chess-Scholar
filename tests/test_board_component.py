@@ -275,3 +275,56 @@ def test_phone_layout_puts_the_board_first_and_folds_its_controls(phone_page) ->
 def test_desktop_shows_board_controls_without_an_expander_header(page) -> None:
     assert page.get_by_role("button", name="Reset board").is_visible()
     assert not page.get_by_text("Board controls").first.is_visible()
+
+
+def test_phone_chat_panel_leaves_no_blank_gap_above_the_chat_input(phone_page) -> None:
+    """Streamlit sizes the panel's wrapper with flex: 0 0 560px, which kept
+    reserving the desktop height below a shrunken phone panel."""
+    panel = phone_page.locator(".st-key-chat_panel").bounding_box()
+    chat_input = phone_page.locator('[data-testid="stChatInput"]').bounding_box()
+    gap = chat_input["y"] - (panel["y"] + panel["height"])
+    assert gap < 60, f"{gap:.0f}px of blank space between the chat panel and the input"
+
+
+_SELECTED = "highlight1-32417"  # chessboard.js's own yellow drag highlight
+
+
+def _piece_on(page, square: str) -> str | None:
+    # The FEN caption sits in the collapsed "Board controls" expander on a
+    # phone, so these tests read chessboard.js's own piece markup instead.
+    piece = page.locator(f".square-{square} img[data-piece]")
+    return piece.get_attribute("data-piece") if piece.count() else None
+
+
+def _selected(page, square: str) -> bool:
+    return _SELECTED in (page.locator(f".square-{square}").get_attribute("class") or "")
+
+
+def test_phone_tap_to_move_moves_the_piece(phone_page) -> None:
+    phone_page.locator(".square-e2").tap()
+    phone_page.locator(".square-e4").tap()
+    phone_page.locator(".square-e4 img[data-piece='wP']").wait_for(timeout=10000)
+    assert _piece_on(phone_page, "e2") is None
+
+
+def test_phone_tapping_the_selected_piece_deselects_it(phone_page) -> None:
+    phone_page.locator(".square-e2").tap()
+    assert _selected(phone_page, "e2")
+    phone_page.locator(".square-e2").tap()
+    assert not _selected(phone_page, "e2")
+
+
+def test_phone_tapping_another_own_piece_switches_selection(phone_page) -> None:
+    phone_page.locator(".square-e2").tap()
+    phone_page.locator(".square-d2").tap()
+    assert _selected(phone_page, "d2")
+    assert not _selected(phone_page, "e2")
+
+
+def test_phone_tapping_an_unreachable_square_is_an_illegal_move(phone_page) -> None:
+    phone_page.locator(".square-e2").tap()
+    phone_page.locator(".square-e5").tap()
+    phone_page.get_by_text("That move isn't legal").wait_for(timeout=10000)
+    assert not _selected(phone_page, "e2")
+    assert _piece_on(phone_page, "e2") == "wP"
+    assert _piece_on(phone_page, "e5") is None
