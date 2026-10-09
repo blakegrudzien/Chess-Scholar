@@ -93,7 +93,7 @@ Stated here deliberately rather than left to be discovered:
 - Chat answers synthesize retrieved human commentary and engine output. They are not the model's own independent tactical judgment, and the model is explicitly instructed not to present them as one.
 - The "find similar games" comparison (Layer 4) matches on exact opening move sequences, not positional understanding. It is an illustrative, approximate comparison, not a rigorous one.
 - The recommendation pool's quality classifier was trained on 184 hand-labeled examples by a single labeler. It is a reasonably capable filter, not a large-scale model.
-- The interface is built for a desktop-sized viewport. It has not yet been adapted for mobile; the board component in particular assumes real horizontal space.
+- The interface is designed for a desktop-sized viewport. It is usable on a phone — Streamlit stacks the two columns and the board scales to fit — but nothing is tuned for that case: the board ends up below the full-height chat panel rather than beside it, so the way it stays in sync with the conversation is much harder to notice.
 - Trend synthesis across time periods (openings gaining or losing popularity by decade) is designed for in the schema but not yet built end to end.
 
 ## Tech stack
