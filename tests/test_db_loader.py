@@ -8,10 +8,12 @@ import pytest
 from src.ingestion.annotation_extractor import AnnotationChunk
 from src.ingestion.db_loader import (
     DatabaseBusyError,
+    HealthCheckedConnectionPool,
     get_connection,
     get_connection_with_timeout,
     load_chunks,
     load_games,
+    query_with_retry,
 )
 from src.ingestion.pgn_parser import GameRecord, MoveRecord
 
@@ -336,3 +338,95 @@ def test_get_connection_with_timeout_gives_up_after_the_wait_budget():
         get_connection_with_timeout(db_pool)
 
     assert db_pool.getconn.call_count > 1  # confirms it actually retried, not just tried once
+
+
+def test_query_with_retry_logs_the_failure_reason_when_a_retry_recovers(caplog):
+    db_pool = MagicMock()
+    dead_conn = MagicMock()
+    fresh_conn = MagicMock()
+    db_pool.getconn.side_effect = [dead_conn, fresh_conn]
+
+    def eco_summary(conn):
+        if conn is dead_conn:
+            raise psycopg2.OperationalError("SSL connection has been closed unexpectedly")
+        return "ok"
+
+    with caplog.at_level(logging.WARNING):
+        result = query_with_retry(db_pool, eco_summary)
+
+    assert result == "ok"
+    assert "eco_summary" in caplog.text
+    assert "SSL connection has been closed unexpectedly" in caplog.text
+
+
+def test_query_with_retry_logs_nothing_on_a_first_try_success(caplog):
+    db_pool = MagicMock()
+    db_pool.getconn.return_value = MagicMock()
+
+    with caplog.at_level(logging.WARNING):
+        query_with_retry(db_pool, lambda conn: "ok")
+
+    assert caplog.text == ""
+
+
+def _fake_connection() -> MagicMock:
+    conn = MagicMock()
+    conn.closed = 0
+    return conn
+
+
+def _health_checked_pool(connections: list[MagicMock]):
+    with patch("psycopg2.connect", side_effect=connections):
+        return HealthCheckedConnectionPool(1, 5, "postgresql://unused")
+
+
+def test_health_checked_pool_skips_the_check_for_a_recently_used_connection():
+    conn = _fake_connection()
+    pool = _health_checked_pool([conn])
+
+    assert pool.getconn() is conn
+    conn.cursor.assert_not_called()
+
+
+def test_health_checked_pool_checks_a_stale_connection_and_keeps_it_if_alive():
+    conn = _fake_connection()
+    pool = _health_checked_pool([conn])
+
+    with patch("src.ingestion.db_loader.STALE_CONNECTION_AGE_SECONDS", 0):
+        assert pool.getconn() is conn
+
+    conn.cursor.return_value.__enter__.return_value.execute.assert_called_once_with("SELECT 1")
+    conn.rollback.assert_called_once()
+
+
+def test_health_checked_pool_replaces_every_idle_connection_when_a_check_fails(caplog):
+    dead_conn = _fake_connection()
+    dead_conn.cursor.return_value.__enter__.return_value.execute.side_effect = (
+        psycopg2.OperationalError("SSL connection has been closed unexpectedly")
+    )
+    other_idle_conn = _fake_connection()
+    fresh_conn = _fake_connection()
+    with patch("psycopg2.connect", side_effect=[other_idle_conn, dead_conn]):
+        pool = HealthCheckedConnectionPool(2, 5, "postgresql://unused")
+
+    with (
+        patch("src.ingestion.db_loader.STALE_CONNECTION_AGE_SECONDS", 0),
+        patch("psycopg2.connect", return_value=fresh_conn),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = pool.getconn()
+
+    assert result is fresh_conn
+    dead_conn.close.assert_called()
+    other_idle_conn.close.assert_called()
+    assert "health check" in caplog.text
+
+
+def test_health_checked_pool_returned_connection_is_reused_without_a_check():
+    conn = _fake_connection()
+    pool = _health_checked_pool([conn])
+
+    pool.putconn(pool.getconn())
+
+    assert pool.getconn() is conn
+    conn.cursor.assert_not_called()

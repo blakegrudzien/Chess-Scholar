@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable, Iterable
 from urllib.parse import urlparse
@@ -95,12 +96,93 @@ DB_POOL_MIN_CONN = 2
 DB_POOL_MAX_CONN = 10
 
 
-def get_connection_pool() -> psycopg2.pool.ThreadedConnectionPool:
+# Neon's free tier suspends compute after 5 minutes without queries, which
+# closes every open connection server-side while the pool still holds them.
+# A connection idle for less than that can't have been closed by a suspend,
+# so only connections idle at least this long are tested before use.
+STALE_CONNECTION_AGE_SECONDS = 270
+
+
+def _select_one(conn: psycopg2.extensions.connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1")
+    # psycopg2 opens a transaction on any statement; close it so the
+    # connection doesn't sit "idle in transaction".
+    conn.rollback()
+
+
+class HealthCheckedConnectionPool(psycopg2.pool.ThreadedConnectionPool):
+    """A ThreadedConnectionPool that tests a connection with SELECT 1 before
+    handing it out, if it has sat idle for STALE_CONNECTION_AGE_SECONDS or
+    longer. Recently used connections skip the test, so an active session
+    pays nothing for it.
+
+    A failed test closes every idle connection, not just the one tested: a
+    suspend kills them all at once, so the next one in the pool would fail
+    the same way. The caller then gets a freshly opened connection.
+    """
+
+    # psycopg2 pool internals this class builds on. They exist at runtime
+    # (psycopg2/pool.py) but psycopg2's type stubs don't declare them.
+    _lock: threading.Lock
+    _pool: list[psycopg2.extensions.connection]
+    _getconn: Callable[..., psycopg2.extensions.connection]
+    _putconn: Callable[..., None]
+
+    def __init__(self, minconn: int, maxconn: int, *args, **kwargs):
+        super().__init__(minconn, maxconn, *args, **kwargs)
+        # id(conn) -> time.monotonic() when it last entered the idle pool,
+        # starting with the minconn connections opened above.
+        now = time.monotonic()
+        self._idle_since: dict[int, float] = {id(conn): now for conn in self._pool}
+
+    def getconn(self, key=None):
+        with self._lock:
+            conn = self._getconn(key)
+            idle_since = self._idle_since.pop(id(conn), None)
+        if idle_since is None or time.monotonic() - idle_since < STALE_CONNECTION_AGE_SECONDS:
+            return conn
+        try:
+            _select_one(conn)
+            return conn
+        except DB_RETRYABLE_ERRORS as exc:
+            logger.warning(
+                "Pooled connection idle %.0fs failed its health check (%s); "
+                "replacing all idle connections",
+                time.monotonic() - idle_since,
+                str(exc).strip(),
+            )
+        with self._lock:
+            for idle_conn in self._pool:
+                idle_conn.close()
+            self._pool.clear()
+            self._idle_since.clear()
+            self._putconn(conn, key, close=True)
+            return self._getconn(key)
+
+    def putconn(self, conn=None, key=None, close=False):
+        with self._lock:
+            self._putconn(conn, key, close)
+            # _putconn closes a connection instead of pooling it when the
+            # pool already holds minconn idle ones, so check where it went.
+            if any(idle_conn is conn for idle_conn in self._pool):
+                self._idle_since[id(conn)] = time.monotonic()
+            else:
+                self._idle_since.pop(id(conn), None)
+
+
+def get_connection_pool() -> HealthCheckedConnectionPool:
     load_dotenv(override=True)  # see get_connection above for why override=True
     database_url = os.environ["DATABASE_URL"]
-    return psycopg2.pool.ThreadedConnectionPool(
+    return HealthCheckedConnectionPool(
         DB_POOL_MIN_CONN, DB_POOL_MAX_CONN, database_url, **_neon_connect_kwargs(database_url)
     )
+
+
+def ping_database(db_pool: psycopg2.pool.ThreadedConnectionPool) -> None:
+    """Run SELECT 1 through the pool, which resets Neon's inactivity timer
+    and wakes a suspended compute."""
+    query_with_retry(db_pool, _select_one)
 
 
 class DatabaseBusyError(Exception):
@@ -159,13 +241,15 @@ def query_with_retry(db_pool: psycopg2.pool.ThreadedConnectionPool, fn: Callable
     DB-backed tools, so this retry behavior lives in exactly one place.
     """
     conn = get_connection_with_timeout(db_pool)
+    last_error: Exception | None = None
     for attempt in range(MAX_QUERY_ATTEMPTS):
         try:
             result = fn(conn, *args, **kwargs)
-        except DB_RETRYABLE_ERRORS:
+        except DB_RETRYABLE_ERRORS as exc:
             db_pool.putconn(conn, close=True)
             if attempt == MAX_QUERY_ATTEMPTS - 1:
                 raise
+            last_error = exc
             conn = get_connection_with_timeout(db_pool)
             continue
         except Exception:
@@ -176,6 +260,16 @@ def query_with_retry(db_pool: psycopg2.pool.ThreadedConnectionPool, fn: Callable
             raise
         else:
             db_pool.putconn(conn)
+            # A recovered retry is invisible to the user, so this line is the
+            # only record that a pooled connection had died. The original
+            # error text separates a stale connection from an unreachable DB.
+            if attempt > 0:
+                logger.warning(
+                    "%s succeeded on attempt %d after a dropped connection: %s",
+                    getattr(fn, "__name__", repr(fn)),
+                    attempt + 1,
+                    str(last_error).strip(),
+                )
             return result
     # Every iteration above ends in return or raise (the last attempt's
     # except clause always raises instead of looping again), so this is

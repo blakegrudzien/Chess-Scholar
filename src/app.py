@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from pathlib import Path
 
 # `streamlit run src/app.py` puts src/ itself on sys.path, not the project
@@ -23,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import streamlit as st  # noqa: E402
 
 from src.ui.chat import render_main_screen  # noqa: E402
+from src.ui.resources import keep_warm_ping_due, ping_database_in_background  # noqa: E402
 from src.ui.styles import apply_global_styles  # noqa: E402
 from src.ui.tutorial_overlay import render_tutorial_trigger  # noqa: E402
 
@@ -44,7 +46,32 @@ st.set_page_config(page_title="Chess Scholar", layout="wide")
 apply_global_styles()
 
 
+# How often the keep-warm fragment checks whether a ping is due. Much shorter
+# than the ping interval itself because every full run restarts a fragment's
+# run_every timer: a visitor clicking more often than the interval would
+# never let a 270s timer fire. Checking often (and on every full run) bounds
+# the real gap between pings to KEEP_WARM_PING_INTERVAL_SECONDS plus this.
+KEEP_WARM_CHECK_SECONDS = 15
+
+
+@st.fragment(run_every=KEEP_WARM_CHECK_SECONDS)
+def _keep_database_warm() -> None:
+    # Renders nothing. Runs once as part of every full run (the first of
+    # which is the page-load warmup) and then on its own timer, which never
+    # interrupts a full run in progress.
+    now = time.monotonic()
+    if keep_warm_ping_due(
+        now, st.session_state.get("last_db_ping"), st.session_state.last_interaction
+    ):
+        st.session_state.last_db_ping = now
+        ping_database_in_background()
+
+
 def main() -> None:
+    # Every full run follows a real interaction (or the page load itself);
+    # the keep-warm fragment's own timer reruns only the fragment, so they
+    # don't count as activity.
+    st.session_state.last_interaction = time.monotonic()
     # Title and the tour trigger share one row, not stacked -- reclaims a
     # full line of vertical space toward fitting an unscrolled, fresh page
     # inside a laptop viewport (see styles.py's stMainBlockContainer rule
@@ -55,6 +82,8 @@ def main() -> None:
     with tutorial_col:
         render_tutorial_trigger()
     render_main_screen()
+    # Last, so the page has rendered before the warmup ping starts.
+    _keep_database_warm()
 
 
 main()
