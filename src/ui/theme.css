@@ -460,3 +460,58 @@ button[data-testid="stBaseButton-header"],
 button[data-testid="stMainMenuButton"] {
     color: #EDE1CC;
 }
+
+/* Board controls (Turn, FEN, Reset, Undo) live in an st.expander so a
+   phone can fold them away. On wider screens the expander's header and
+   border are hidden and its contents always shown, so desktop looks like
+   a plain column of controls. */
+@media (min-width: 641px) {
+    .st-key-board_controls div[data-testid="stExpander"],
+    .st-key-board_controls details {
+        border: none;
+        background: transparent;
+        box-shadow: none;
+    }
+    .st-key-board_controls details > summary {
+        display: none;
+    }
+    .st-key-board_controls details::details-content {
+        content-visibility: visible;
+        block-size: auto;
+    }
+    .st-key-board_controls details > div {
+        display: block !important;
+        padding: 0;
+        border: none;
+    }
+}
+
+/* Phones, where Streamlit stacks the two columns. The board column comes
+   first so the page reads as chess at a glance, and the chat comes last
+   with nothing below it: the message panel drops its fixed height and
+   inner scroll, so a long answer extends the page and there is a single
+   scroll instead of a scroll box nested inside the page. */
+@media (max-width: 640px) {
+    div[data-testid="stColumn"]:has(.st-key-board_panel) {
+        order: -1;
+    }
+    div[data-testid="stVerticalBlock"].st-key-chat_panel {
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+        resize: none;
+        min-height: 0;
+        padding: 6px !important;
+    }
+    /* The avatar sits on its own line above each message instead of
+       beside it, giving the text the full width of a narrow screen. */
+    div[data-testid="stChatMessage"] {
+        flex-direction: column;
+        gap: 6px;
+        padding: 12px;
+    }
+    div[data-testid="stChatMessageContent"] {
+        align-self: stretch;
+        width: 100%;
+    }
+}

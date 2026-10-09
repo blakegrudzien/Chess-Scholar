@@ -244,3 +244,34 @@ def test_replay_next_and_previous_step_through_the_game(replay_page) -> None:
     )
     assert _board_fen(replay_page) == starting_fen
     assert replay_page.get_by_role("button", name="Previous").is_disabled()
+
+
+@pytest.fixture
+def phone_page(app_server: str) -> Iterator[Page]:
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        context = browser.new_context(**p.devices["iPhone 13"])
+        pg = context.new_page()
+        pg.goto(app_server, wait_until="networkidle")
+        pg.wait_for_selector(".square-e2", timeout=15000)
+        yield pg
+        browser.close()
+
+
+def test_phone_layout_puts_the_board_first_and_folds_its_controls(phone_page) -> None:
+    def top(selector: str) -> float:
+        return phone_page.locator(selector).first.bounding_box()["y"]
+
+    assert top(".st-key-board_panel") < top(".st-key-chat_panel")
+
+    reset = phone_page.get_by_role("button", name="Reset board")
+    assert reset.count() == 0 or not reset.is_visible()
+    phone_page.get_by_text("Board controls").click()
+    reset.wait_for(state="visible", timeout=5000)
+
+
+def test_desktop_shows_board_controls_without_an_expander_header(page) -> None:
+    assert page.get_by_role("button", name="Reset board").is_visible()
+    assert not page.get_by_text("Board controls").first.is_visible()

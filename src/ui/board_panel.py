@@ -164,16 +164,11 @@ def render_board_panel(*, disabled: bool = False) -> None:
     status = game_status(current_board)
 
     with controls_col:
-        # Whose turn it is stops being the useful thing to say once the game
-        # is decided, so the result takes that line's place.
-        if status is None:
-            st.caption(f"Turn: {'White' if current_board.turn else 'Black'}")
-        else:
+        # Feedback a move can produce (game result, illegal-move warning)
+        # and the replay controls stay outside the "Board controls"
+        # expander below, so collapsing it on a phone never hides them.
+        if status is not None:
             st.caption(status)
-        # A caption with inline code rather than st.code(): a single short
-        # FEN doesn't need a full code panel's padding and copy button, and
-        # this matches the "Position: `{fen}`" captions in the transcript.
-        st.caption(f"FEN: `{current_board.fen()}`", help=FEN_HELP)
 
         if replaying:
             index = st.session_state.game_path_index
@@ -210,15 +205,26 @@ def render_board_panel(*, disabled: bool = False) -> None:
             elif st.session_state.last_illegal_attempt is not None:
                 st.warning("That move isn't legal. Try again.")
 
-            if st.button("Reset board", disabled=disabled):
-                st.session_state.board = chess.Board()
-                st.session_state.last_illegal_attempt = None
-                st.session_state.board_generation += 1
-                st.rerun()
-            if st.button("Undo last move", disabled=disabled or not current_board.move_stack):
-                current_board.pop()
-                st.session_state.board_generation += 1
-                st.rerun()
+        # Collapsed on phones to keep the chat close to the board; theme.css
+        # hides the header and always shows the contents on wider screens.
+        with st.container(key="board_controls"), st.expander("Board controls"):
+            if status is None:
+                st.caption(f"Turn: {'White' if current_board.turn else 'Black'}")
+            # A caption with inline code rather than st.code(): a single
+            # short FEN doesn't need a full code panel's padding and copy
+            # button, and this matches the "Position: `{fen}`" captions in
+            # the transcript.
+            st.caption(f"FEN: `{current_board.fen()}`", help=FEN_HELP)
+            if not replaying:
+                if st.button("Reset board", disabled=disabled):
+                    st.session_state.board = chess.Board()
+                    st.session_state.last_illegal_attempt = None
+                    st.session_state.board_generation += 1
+                    st.rerun()
+                if st.button("Undo last move", disabled=disabled or not current_board.move_stack):
+                    current_board.pop()
+                    st.session_state.board_generation += 1
+                    st.rerun()
 
     if st.button(
         "Evaluate this position with Stockfish",
