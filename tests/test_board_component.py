@@ -15,10 +15,12 @@ reason instead of failing the whole suite.
     playwright install chromium
 
 No live Postgres/Anthropic/Voyage/Stockfish credentials are needed for these
-tests specifically -- confirmed by reading src/ui/chat.py, upload.py, and
-resources.py end to end: every external-resource getter is behind
-@st.cache_resource and only ever reached from a chat/recommendation
-button's on-click path, never from booting the app or dragging a piece.
+tests specifically. Every external-resource getter is behind
+@st.cache_resource and reached only from a chat/recommendation button's
+on-click path, with one exception: booting the app starts a background
+database ping (app.py's _keep_database_warm). Without a database it fails
+on its own thread and only logs a warning, so the page and these tests are
+unaffected.
 """
 
 from __future__ import annotations

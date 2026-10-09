@@ -79,11 +79,15 @@ KEEP_WARM_PING_INTERVAL_SECONDS = 270
 KEEP_WARM_INACTIVITY_LIMIT_SECONDS = 30 * 60
 
 
+def session_inactive(now: float, last_interaction: float) -> bool:
+    return now - last_interaction > KEEP_WARM_INACTIVITY_LIMIT_SECONDS
+
+
 def keep_warm_ping_due(now: float, last_ping: float | None, last_interaction: float) -> bool:
     """Whether a session should ping the database now. A session's first
     check always pings, which starts waking Neon as soon as the page loads.
     """
-    if now - last_interaction > KEEP_WARM_INACTIVITY_LIMIT_SECONDS:
+    if session_inactive(now, last_interaction):
         return False
     return last_ping is None or now - last_ping >= KEEP_WARM_PING_INTERVAL_SECONDS
 

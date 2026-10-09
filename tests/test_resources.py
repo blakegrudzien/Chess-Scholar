@@ -2,6 +2,7 @@ from src.ui.resources import (
     KEEP_WARM_INACTIVITY_LIMIT_SECONDS,
     KEEP_WARM_PING_INTERVAL_SECONDS,
     keep_warm_ping_due,
+    session_inactive,
 )
 
 
@@ -28,3 +29,12 @@ def test_pings_once_the_interval_has_passed():
 def test_stops_pinging_after_the_visitor_goes_inactive():
     now = 1000.0 + KEEP_WARM_INACTIVITY_LIMIT_SECONDS + 1
     assert not keep_warm_ping_due(now=now, last_ping=0.0, last_interaction=1000.0)
+
+
+def test_session_counts_as_inactive_only_past_the_limit():
+    assert not session_inactive(
+        now=1000.0 + KEEP_WARM_INACTIVITY_LIMIT_SECONDS, last_interaction=1000.0
+    )
+    assert session_inactive(
+        now=1000.0 + KEEP_WARM_INACTIVITY_LIMIT_SECONDS + 1, last_interaction=1000.0
+    )

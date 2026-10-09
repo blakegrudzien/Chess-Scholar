@@ -23,8 +23,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st  # noqa: E402
 
+from src.ui.activity_listener import keystroke_after_inactivity  # noqa: E402
 from src.ui.chat import render_main_screen  # noqa: E402
-from src.ui.resources import keep_warm_ping_due, ping_database_in_background  # noqa: E402
+from src.ui.resources import (  # noqa: E402
+    keep_warm_ping_due,
+    ping_database_in_background,
+    session_inactive,
+)
 from src.ui.styles import apply_global_styles  # noqa: E402
 from src.ui.tutorial_overlay import render_tutorial_trigger  # noqa: E402
 
@@ -56,10 +61,15 @@ KEEP_WARM_CHECK_SECONDS = 15
 
 @st.fragment(run_every=KEEP_WARM_CHECK_SECONDS)
 def _keep_database_warm() -> None:
-    # Renders nothing. Runs once as part of every full run (the first of
-    # which is the page-load warmup) and then on its own timer, which never
-    # interrupts a full run in progress.
+    # Renders only the invisible keystroke listener. Runs once as part of
+    # every full run (the first of which is the page-load warmup) and then
+    # on its own timer, which never interrupts a full run in progress.
     now = time.monotonic()
+    # A board move already counts as activity (it triggers a full run), but
+    # typing doesn't reach Python until submit, so the first keystroke after
+    # the inactivity limit is reported separately to wake the database early.
+    if keystroke_after_inactivity(armed=session_inactive(now, st.session_state.last_interaction)):
+        st.session_state.last_interaction = now
     if keep_warm_ping_due(
         now, st.session_state.get("last_db_ping"), st.session_state.last_interaction
     ):
