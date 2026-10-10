@@ -321,10 +321,91 @@ def test_phone_tapping_another_own_piece_switches_selection(phone_page) -> None:
     assert not _selected(phone_page, "e2")
 
 
-def test_phone_tapping_an_unreachable_square_is_an_illegal_move(phone_page) -> None:
+def test_phone_tapping_an_unreachable_square_is_rejected_in_the_browser(phone_page) -> None:
     phone_page.locator(".square-e2").tap()
     phone_page.locator(".square-e5").tap()
-    phone_page.get_by_text("That move isn't legal").wait_for(timeout=10000)
+    phone_page.wait_for_timeout(1000)  # time for a wrongly sent move to come back
+
     assert not _selected(phone_page, "e2")
     assert _piece_on(phone_page, "e2") == "wP"
     assert _piece_on(phone_page, "e5") is None
+    # Rejected by chess.js, never sent: no server-side warning appears.
+    assert phone_page.get_by_text("That move isn't legal").count() == 0
+
+
+@pytest.fixture(scope="module")
+def slow_server() -> Iterator[str]:
+    yield from _launch_streamlit_app("tests/_slow_move_harness_app.py")
+
+
+@pytest.fixture
+def slow_page(slow_server: str) -> Iterator[Page]:
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        pg = browser.new_page(viewport={"width": 1400, "height": 1000})
+        pg.goto(slow_server, wait_until="networkidle")
+        pg.wait_for_selector(".square-e2", timeout=15000)
+        yield pg
+        browser.close()
+
+
+@pytest.fixture
+def slow_phone_page(slow_server: str) -> Iterator[Page]:
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        pg = browser.new_context(**p.devices["iPhone 13"]).new_page()
+        pg.goto(slow_server, wait_until="networkidle")
+        pg.wait_for_selector(".square-e2", timeout=15000)
+        yield pg
+        browser.close()
+
+
+def test_a_tapped_move_is_drawn_before_the_server_answers(slow_phone_page) -> None:
+    slow_phone_page.locator(".square-e2").tap()
+    slow_phone_page.locator(".square-e4").tap()
+    # The server takes 1.5s to process a move here, so seeing the pawn well
+    # within that means the browser drew it.
+    slow_phone_page.locator(".square-e4 img[data-piece='wP']").wait_for(timeout=500)
+
+
+def test_castling_moves_the_rook_instantly(slow_phone_page) -> None:
+    for from_square, to_square in (
+        ("e2", "e4"),
+        ("e7", "e5"),
+        ("g1", "f3"),
+        ("b8", "c6"),
+        ("f1", "c4"),
+        ("g8", "f6"),
+    ):
+        slow_phone_page.locator(f".square-{from_square}").tap()
+        slow_phone_page.locator(f".square-{to_square}").tap()
+    slow_phone_page.locator(".square-e1").tap()
+    slow_phone_page.locator(".square-g1").tap()
+
+    slow_phone_page.locator(".square-f1 img[data-piece='wR']").wait_for(timeout=500)
+    assert _piece_on(slow_phone_page, "g1") == "wK"
+    assert _piece_on(slow_phone_page, "h1") is None
+
+
+def test_quick_consecutive_moves_all_reach_the_server(slow_page) -> None:
+    """Each move is sent only after the previous one is confirmed, because
+    Streamlit can fold two quick trigger values into a single rerun."""
+    _drag(slow_page, "e2", "e4")
+    _drag(slow_page, "e7", "e5")
+    _drag(slow_page, "g1", "f3")
+    after_three_moves = "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b"
+    slow_page.wait_for_function(
+        f"{_FEN_CAPTION_JS}?.textContent.includes('{after_three_moves}')", timeout=15000
+    )
+
+
+def test_undo_redraws_the_board_from_the_server(page) -> None:
+    _drag(page, "e2", "e4")
+    page.wait_for_function(f"{_FEN_CAPTION_JS}?.textContent.includes('4P3')", timeout=10000)
+    page.get_by_role("button", name="Undo last move").click()
+    page.locator(".square-e2 img[data-piece='wP']").wait_for(timeout=10000)
+    assert _piece_on(page, "e4") is None

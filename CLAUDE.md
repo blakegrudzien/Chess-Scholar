@@ -54,17 +54,20 @@ supporting code already anticipate them, not because they're live features today
 - **RAG orchestration**: raw SQL + API calls, NOT LangChain/LlamaIndex — deliberately,
   so every step is explainable in an interview without hiding behind a framework.
 - **Frontend**: Streamlit.
-- **Board input**: a draggable board (`src/ui/board_component/`), a custom
-  `st.components.v2.component` wrapping chessboard.js, replacing the original
-  click-grid v1. Deliberately not paired with chess.js — move legality stays
-  entirely in python-chess (`_attempt_move` in `src/ui/chat.py`), the same
-  source of truth the rest of the app already uses; chessboard.js is wired
-  purely as a visual/drag layer, optimistic-UI style (see that function's
-  docstring). Piece art is generated from `chess.svg.piece()` via
-  `scripts/generate_board_piece_images.py`, not chessboard.js's stock
-  Wikipedia set, for visual consistency with the rest of the app. Do NOT use
-  the `streamlit-chess` / `streamlit-chess-board` PyPI packages — unmaintained,
-  and the latter explicitly doesn't work when deployed to Streamlit Cloud.
+- **Board input**: a custom `st.components.v2.component`
+  (`src/ui/board_component/`) wrapping chessboard.js plus vendored chess.js.
+  The browser plays legal moves instantly (drag on desktop, tap-to-move on
+  touch devices) and rejects illegal ones locally; every legal move is still
+  sent to python-chess (`_attempt_move` in `src/ui/board_panel.py`), which
+  has the final say and records the position. Python redraws the board only
+  when its FEN differs from what the browser shows: Reset, Undo, replay,
+  positions from the chat, or a move it rejected (see `wiring.js`). Kept as
+  two layers on purpose: the browser gives instant feedback, and the server
+  never trusts a client-supplied position. Piece art is generated from
+  `chess.svg.piece()` via `scripts/generate_board_piece_images.py` for visual
+  consistency with the rest of the app. Do NOT use the `streamlit-chess` /
+  `streamlit-chess-board` PyPI packages: unmaintained, and the latter
+  explicitly doesn't work when deployed to Streamlit Cloud.
 - **Linting/formatting**: ruff (not black/flake8 separately).
 
 ## Data sources

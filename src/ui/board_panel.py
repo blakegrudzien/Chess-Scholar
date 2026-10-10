@@ -23,9 +23,10 @@ BOARD_SIZE_PX = 340
 
 
 def _attempt_move(source: str, target: str) -> None:
-    """Validate a drag-and-drop {from, to} pair against python-chess, the
-    single source of truth for move legality in this app. Promotions default
-    to a queen.
+    """Validate and record a {from, to} move from the board against
+    python-chess, which has the final say on legality even though the
+    browser already checked it with chess.js. Promotions default to a queen,
+    matching the browser.
 
     source/target arrive from chess_board() as plain strings chosen by the
     component's JavaScript. In normal use they are a real drag's two
@@ -34,10 +35,10 @@ def _attempt_move(source: str, target: str) -> None:
     move) is rejected the same honest way rather than raising
     InvalidMoveError through to Streamlit's full-traceback error page.
 
-    board_generation is bumped even when the move is rejected. An illegal
-    drop leaves board.fen() textually identical to what it was before, so
-    without a distinct generation value the component has no signal to
-    re-render and snap the piece back -- see chess_board()'s docstring.
+    board_generation is bumped for every move, accepted or rejected, so the
+    board hears back either way: a confirmation when Python's FEN matches
+    the one it drew, or a rejected move's unchanged FEN to put the pieces
+    back -- see chess_board()'s docstring.
     """
     board: chess.Board = st.session_state.board
     try:
@@ -96,6 +97,34 @@ def game_status(board: chess.Board) -> str | None:
     return None
 
 
+def _render_board_controls(
+    current_board: chess.Board, status: str | None, replaying: bool, disabled: bool, *, layout: str
+) -> None:
+    """Turn, FEN, Reset and Undo. `layout` keeps the two copies' widget keys
+    distinct (see render_board_panel)."""
+    if status is None:
+        st.caption(f"Turn: {'White' if current_board.turn else 'Black'}")
+    # A caption with inline code rather than st.code(): a single short FEN
+    # doesn't need a full code panel's padding and copy button, and this
+    # matches the "Position: `{fen}`" captions in the transcript.
+    st.caption(f"FEN: `{current_board.fen()}`", help=FEN_HELP)
+    if replaying:
+        return
+    if st.button("Reset board", key=f"reset_board_{layout}", disabled=disabled):
+        st.session_state.board = chess.Board()
+        st.session_state.last_illegal_attempt = None
+        st.session_state.board_generation += 1
+        st.rerun()
+    if st.button(
+        "Undo last move",
+        key=f"undo_move_{layout}",
+        disabled=disabled or not current_board.move_stack,
+    ):
+        current_board.pop()
+        st.session_state.board_generation += 1
+        st.rerun()
+
+
 def render_board_panel(*, disabled: bool = False) -> None:
     """A draggable board reflecting the position under discussion, plus a
     quick-eval button, Reset/Undo, and a free-text "ask about this position"
@@ -103,11 +132,11 @@ def render_board_panel(*, disabled: bool = False) -> None:
     not None) the board is read-only and steps through that game's moves
     instead, with Evaluate/Ask-position operating on whatever ply is shown.
 
-    Optimistic UI, with no client-side legality check: chess_board() lets a
-    drop land wherever it was dropped, and _attempt_move validates it against
-    python-chess afterward. An illegal drop leaves st.session_state.board
-    unchanged, so the next render's still-unmoved data reverts the piece via
-    chessboard.js's own diffing.
+    Moves are drawn in the browser: chess_board() plays legal moves
+    instantly with chess.js and rejects illegal ones without contacting the
+    server. Each legal move still reaches _attempt_move, which checks it
+    against python-chess and records it; if python-chess ever rejects one,
+    the unchanged FEN sent back makes the board put the pieces back.
 
     Dragging is disabled outright during replay rather than left enabled and
     ignored: st.session_state.board is the free-play board sitting behind the
@@ -143,19 +172,17 @@ def render_board_panel(*, disabled: bool = False) -> None:
     board_display_col, controls_col = st.columns([5, 2])
 
     with board_display_col:
-        # Wrapped in a keyed container rather than passing chess_board() its
-        # own key=, so the tutorial overlay has a stable
-        # `.st-key-tutorial_board_target` selector to spotlight. Keying the
-        # component itself would make Streamlit treat it as one persistent
-        # instance and stop remounting it when `data` changes, which is the
-        # mechanism board_generation relies on for illegal-move snapback and
-        # Undo (see chess_board()'s docstring).
+        # The keyed container gives the tutorial overlay a stable
+        # `.st-key-tutorial_board_target` selector to spotlight. The board
+        # itself is keyed too, so it persists across reruns and keeps the
+        # moves it already drew (see chess_board()'s docstring).
         with st.container(key="tutorial_board_target"):
             drop = chess_board(
                 current_board.fen(),
                 size=BOARD_SIZE_PX,
                 generation=st.session_state.board_generation,
                 draggable=not replaying and not disabled,
+                key="chess_board",
             )
         if drop is not None and not replaying and not disabled:
             _attempt_move(drop["from"], drop["to"])
@@ -205,26 +232,15 @@ def render_board_panel(*, disabled: bool = False) -> None:
             elif st.session_state.last_illegal_attempt is not None:
                 st.warning("That move isn't legal. Try again.")
 
-        # Collapsed on phones to keep the chat close to the board; theme.css
-        # hides the header and always shows the contents on wider screens.
-        with st.container(key="board_controls"), st.expander("Board controls"):
-            if status is None:
-                st.caption(f"Turn: {'White' if current_board.turn else 'Black'}")
-            # A caption with inline code rather than st.code(): a single
-            # short FEN doesn't need a full code panel's padding and copy
-            # button, and this matches the "Position: `{fen}`" captions in
-            # the transcript.
-            st.caption(f"FEN: `{current_board.fen()}`", help=FEN_HELP)
-            if not replaying:
-                if st.button("Reset board", disabled=disabled):
-                    st.session_state.board = chess.Board()
-                    st.session_state.last_illegal_attempt = None
-                    st.session_state.board_generation += 1
-                    st.rerun()
-                if st.button("Undo last move", disabled=disabled or not current_board.move_stack):
-                    current_board.pop()
-                    st.session_state.board_generation += 1
-                    st.rerun()
+        # Rendered twice, and theme.css shows one per screen size: a plain
+        # block on wider screens, and a collapsed "Board controls" expander
+        # on phones to keep the chat close to the board. CSS can make a
+        # closed expander's contents visible but not clickable, since the
+        # browser still routes clicks to the closed element.
+        with st.container(key="board_controls_wide"):
+            _render_board_controls(current_board, status, replaying, disabled, layout="wide")
+        with st.container(key="board_controls_phone"), st.expander("Board controls"):
+            _render_board_controls(current_board, status, replaying, disabled, layout="phone")
 
     if st.button(
         "Evaluate this position with Stockfish",

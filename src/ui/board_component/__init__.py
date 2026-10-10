@@ -1,10 +1,10 @@
-"""A draggable chess board, built as an st.components.v2 component around
-chessboard.js.
+"""A chess board, built as an st.components.v2 component around
+chessboard.js, with chess.js so the browser knows the rules.
 
-Deliberately not paired with chess.js: move legality stays entirely in
-python-chess, the same source of truth the rest of this app already uses.
-See board_panel.py's render_board_panel docstring for the optimistic-UI
-flow this implies.
+The browser plays legal moves instantly and rejects illegal ones without a
+server round trip; python-chess on the server still checks and records
+every move and has the final say. See wiring.js for how the two stay in
+sync, and board_panel.py's render_board_panel docstring for the Python side.
 
 isolate_styles=False is required, not a style choice: chessboard.js uses
 jQuery ID-based lookups (`$("#" + squareId)`) against the *document* to
@@ -23,10 +23,20 @@ import streamlit as st
 
 _DIR = Path(__file__).parent
 
+# chess.js ships an ES module with named exports and no imports, so it can
+# share this one module with wiring.js's default export. Its source map isn't
+# vendored, so the reference to it is dropped to avoid a 404 in devtools.
+_CHESS_JS = (
+    (_DIR / "vendor" / "chess-1.4.0.esm.js")
+    .read_text(encoding="utf-8")
+    .replace("//# sourceMappingURL=chess.js.map", "")
+)
+
 _JS = "\n".join(
     (
         (_DIR / "vendor" / "jquery-3.7.1.min.js").read_text(encoding="utf-8"),
         (_DIR / "vendor" / "chessboard-1.0.0.min.js").read_text(encoding="utf-8"),
+        _CHESS_JS,
         (_DIR / "generated" / "piece_images.js").read_text(encoding="utf-8"),
         (_DIR / "wiring.js").read_text(encoding="utf-8"),
     )
@@ -86,19 +96,17 @@ def chess_board(
     script run -- "drop" is a Streamlit trigger value (see wiring.js), so it
     resets to None automatically after one rerun rather than replaying.
 
-    `generation` must change on every call where the board should visually
-    re-sync, independent of whether `fen` changed. Needed for an illegal
-    drop: chessboard.js optimistically shows the piece at the dropped
-    square, but a rejected move leaves `fen` exactly what it was before the
-    drop, so `data` wouldn't otherwise differ and the component would have
-    no signal to snap the piece back (see chat.py's board_generation
-    counter).
+    Pass a `key` so the board persists across reruns: wiring.js then keeps
+    the moves it drew itself and redraws only when `fen` differs from what
+    it shows. `generation` must change after every move Python processes,
+    so the board hears back even when Python's FEN matches the one it
+    already drew (its confirmation of a move) or when a rejected move leaves
+    `fen` unchanged (its signal to put the pieces back).
 
-    draggable=False renders a read-only board (used during game replay in
-    chat.py), threaded straight into chessboard.js's own `draggable` option
-    -- onDrop never fires when it's False. The Python caller should still
-    check its own replay-vs-free-play state before acting on a drop too,
-    defense in depth rather than trusting a single layer.
+    draggable=False makes the board read-only (game replay, and while an
+    answer generates). The Python caller should still check its own
+    replay-vs-free-play state before acting on a drop too, defense in depth
+    rather than trusting a single layer.
     """
     result = _chess_board_component(
         data={"fen": fen, "size": size, "generation": generation, "draggable": draggable},
