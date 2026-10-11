@@ -88,7 +88,7 @@ def main() -> None:
     # for the rest of that budget).
     title_col, tutorial_col = st.columns([6, 1], vertical_alignment="bottom")
     with title_col:
-        st.title("Chess Scholar")
+        st.title("Chess Scholar", anchor=False)
     with tutorial_col:
         render_tutorial_trigger()
     render_main_screen()

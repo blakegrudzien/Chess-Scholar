@@ -70,18 +70,6 @@ _chess_board_component = st.components.v2.component(
     isolate_styles=False,
 )
 
-# Streamlit gives the element container Python's `height=` renders into
-# overflow-y: auto (confirmed by inspecting the live DOM: stElementContainer,
-# not this component itself, is what has the scrollbar) -- fine as long as
-# the actual chessboard.js content never exceeds that exact pixel height,
-# but a brief mismatch (the container's declared height and the JS side's
-# actual rendered content settling on different frames, right after a
-# rebuild) is enough to trip it into showing a scrollbar for a moment before
-# it corrects itself. A small buffer between the requested container height
-# and the board's own true pixel size (still exactly `size`, unaffected)
-# gives that transient mismatch somewhere to go instead of overflowing.
-_HEIGHT_BUFFER_PX = 10
-
 
 def chess_board(
     fen: str,
@@ -91,7 +79,8 @@ def chess_board(
     draggable: bool = True,
     key: str | None = None,
 ) -> dict[str, str] | None:
-    """Render a board at `fen`. Returns {"from": sq, "to": sq} for the drop
+    """Render a board at `fen`, `size` pixels wide at most and narrower
+    when the screen is. Returns {"from": sq, "to": sq} for the drop
     that just happened, or None if nothing new was dropped since the last
     script run -- "drop" is a Streamlit trigger value (see wiring.js), so it
     resets to None automatically after one rerun rather than replaying.
@@ -111,7 +100,8 @@ def chess_board(
     result = _chess_board_component(
         data={"fen": fen, "size": size, "generation": generation, "draggable": draggable},
         key=key,
-        height=size + _HEIGHT_BUFFER_PX,
+        # Left at Streamlit's default, height="content": the board shrinks
+        # on narrow screens (see wiring.js), and its frame follows.
         on_drop_change=lambda: None,
     )
     return result.drop

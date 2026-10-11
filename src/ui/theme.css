@@ -272,16 +272,11 @@ div[data-testid="stStatusWidget"] {
 }
 
 /* The draggable board's element container gets overflow-y: auto from
-   Streamlit itself (confirmed by inspecting the live DOM) -- fine as long
-   as chessboard.js's actual rendered content never exceeds the exact
-   pixel height Python requested, but real browsers don't guarantee that:
-   subpixel rounding at a given zoom/DPI, or a brief mismatch between the
-   container's declared height and the JS side settling into its own
-   layout right after a rebuild, is enough to trip it into showing a
-   scrollbar (board_component's own _HEIGHT_BUFFER_PX narrows how often
-   this happens but can't guarantee never). The board is never meant to
-   scroll internally -- forcing this off entirely is more robust than
-   chasing an exact pixel match. Scoped via :has() to the one element
+   Streamlit itself (confirmed by inspecting the live DOM). Subpixel
+   rounding at a given zoom/DPI, or the board settling into its fitted
+   width a frame after its container, can briefly trip that into showing
+   a scrollbar. The board is never meant to scroll internally, so this
+   turns it off outright. Scoped via :has() to the one element
    container that actually holds the board, not every stElementContainer
    on the page. */
 div[data-testid="stElementContainer"]:has([class*="board-"]) {
@@ -334,7 +329,7 @@ div[data-testid="stApp"] {
    away that margin for chat's gain. board_col itself is further split
    for the board and its side controls (see _render_board_panel), and
    needs real room for both: at a 1300px/3:2 split, the board's
-   fixed 340px pixel size (see board_component's own size param) does not
+   fixed pixel size (BOARD_SIZE_PX in board_panel.py) does not
    fit in its ~291px actual sub-column, and chessboard.js has no way to
    shrink to match -- it just overflowed into a horizontal scrollbar.
 

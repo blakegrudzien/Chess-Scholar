@@ -16,9 +16,8 @@ import streamlit as st
 from src.ui.board_component import chess_board
 from src.ui.help_text import FEN_HELP, PLY_HELP
 
-# Board edge in CSS pixels. chessboard.js treats this as a floor it will not
-# shrink below regardless of container width, which is what makes the column
-# ratio below load-bearing rather than cosmetic.
+# Largest board edge in CSS pixels. The board shrinks below this when its
+# column is narrower (see wiring.js), e.g. to 328px on a 360px-wide phone.
 BOARD_SIZE_PX = 340
 
 

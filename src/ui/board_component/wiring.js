@@ -25,10 +25,12 @@ function createView(parentElement, { fen, size }) {
   // container to build the board markup, which replaces the container's
   // entire innerHTML, including the style tag Streamlit injects into
   // parentElement for this component's CSS. Its own empty child div keeps
-  // that call contained. chessboard.js also sizes itself to its container's
-  // width, so the width is set explicitly from the size Python passes.
+  // that call contained. chessboard.js sizes itself to that div's width:
+  // `size` from Python is the maximum, and narrower screens get whatever
+  // width is available (328px on a 360px-wide phone).
   const container = document.createElement("div");
-  container.style.width = `${size}px`;
+  const fittedWidth = () => `${Math.min(size, parentElement.clientWidth || size)}px`;
+  container.style.width = fittedWidth();
   parentElement.appendChild(container);
 
   // On touch-first devices a drag starting on the board scrolls the page
@@ -128,6 +130,17 @@ function createView(parentElement, { fen, size }) {
   };
   container.addEventListener("click", onTap);
 
+  // Re-fit when the available width changes: rotating a phone, resizing a
+  // window. resize() redraws the squares, so any tap selection is cleared.
+  const resizeObserver = new ResizeObserver(() => {
+    const width = fittedWidth();
+    if (container.style.width === width) return;
+    container.style.width = width;
+    select(null);
+    board.resize();
+  });
+  resizeObserver.observe(parentElement);
+
   view.sync = (newFen) => {
     if (pending.length && samePosition(newFen, pending[0].fenAfter)) {
       // Python confirmed the oldest move; the board already shows it.
@@ -145,6 +158,7 @@ function createView(parentElement, { fen, size }) {
   };
 
   view.destroy = () => {
+    resizeObserver.disconnect();
     container.removeEventListener("click", onTap);
     board.destroy();
     container.remove();

@@ -409,3 +409,67 @@ def test_undo_redraws_the_board_from_the_server(page) -> None:
     page.get_by_role("button", name="Undo last move").click()
     page.locator(".square-e2 img[data-piece='wP']").wait_for(timeout=10000)
     assert _piece_on(page, "e4") is None
+
+
+def test_board_fits_a_360px_wide_phone(app_server: str) -> None:
+    """360px is the most common Android width; with 16px page margins that
+    leaves 328px for the board."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_context(
+            viewport={"width": 360, "height": 780}, is_mobile=True, has_touch=True
+        ).new_page()
+        page.goto(app_server, wait_until="networkidle")
+        page.wait_for_selector(".square-h1", timeout=15000)
+        h1 = page.locator(".square-h1").bounding_box()
+        overflow = page.evaluate("document.documentElement.scrollWidth - window.innerWidth")
+        browser.close()
+
+    assert h1["x"] + h1["width"] <= 360 - 16, "the h-file runs into or past the page margin"
+    assert overflow == 0
+
+
+def test_title_has_no_self_link(phone_page) -> None:
+    """st.title adds a "link to this heading" anchor that phones show
+    permanently; on a one-page app it only links back to itself."""
+    assert phone_page.locator("h1 a").count() == 0
+
+
+def _board_width(page) -> float:
+    a8, h8 = page.locator(".square-a8").bounding_box(), page.locator(".square-h8").bounding_box()
+    return h8["x"] + h8["width"] - a8["x"]
+
+
+def test_board_is_full_size_when_the_phone_has_room(phone_page) -> None:
+    # An iPhone 13 has 358px for the board, more than the 340px maximum.
+    # chessboard.js rounds squares down to whole pixels: 8 x 42 = 336.
+    assert _board_width(phone_page) == 8 * (340 // 8)
+
+
+def test_board_is_not_clipped_on_a_1280px_laptop(app_server: str) -> None:
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 800})
+        page.goto(app_server, wait_until="networkidle")
+        page.wait_for_selector(".square-h1", timeout=15000)
+        h1 = page.locator(".square-h1").bounding_box()
+        column = page.locator(".st-key-tutorial_board_target").bounding_box()
+        browser.close()
+
+    assert h1["x"] + h1["width"] <= column["x"] + column["width"] + 1
+
+
+def test_board_refits_when_the_screen_narrows(phone_page) -> None:
+    """Rotating a phone or resizing a window changes the available width
+    after the board is drawn."""
+    phone_page.set_viewport_size({"width": 360, "height": 780})
+    phone_page.wait_for_function(
+        "(() => { const a = document.querySelector('.square-a8').getBoundingClientRect();"
+        " const h = document.querySelector('.square-h8').getBoundingClientRect();"
+        " return h.right - a.left <= 328; })()",
+        timeout=5000,
+    )
