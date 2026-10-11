@@ -453,7 +453,7 @@ def test_show_opening_line_reports_the_fen_and_label_via_on_position():
     board = chess.Board()
     for san in ["e4", "e5", "Nf3"]:
         board.push_san(san)
-    on_position.assert_called_once_with(board.fen(), label="Main line", update_board=False)
+    on_position.assert_called_once_with(board.fen(), label="Main line")
     assert "Main line" in result
     assert "e4 e5 Nf3" in result
 

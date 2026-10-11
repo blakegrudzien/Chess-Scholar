@@ -18,7 +18,7 @@ There is also a deeper reason a chess engine alone cannot fill this role. Stockf
 
 This project treats that as the actual problem: given a natural-language question, decide which of several structurally different backends (or which combination) can answer it, then synthesize a single coherent response. The routing is not a keyword matcher or an intent classifier trained for the purpose. It is Claude Sonnet 5's own tool-calling, given four tools and a system prompt describing when each applies, deciding for itself which to call, in what order, and how many times. Read the *why* behind that choice in [Design decisions](#design-decisions-worth-noting) below.
 
-The result is a chat interface, a draggable board that stays in sync with whatever position the conversation is discussing, and two supporting features built on the same corpus: point-in-time evaluation against Stockfish, and an "illustrative comparison" that matches an uploaded game's opening moves against 127,000 games of the master-level corpus.
+The result is a chat interface whose answers draw the positions they discuss as inline diagrams, a board to play on and ask about (drag on desktop, tap on phones), and two supporting features built on the same corpus: point-in-time evaluation against Stockfish, and an "illustrative comparison" that matches an uploaded game's opening moves against 127,000 games of the master-level corpus.
 
 ## Architecture
 

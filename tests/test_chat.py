@@ -234,7 +234,7 @@ from unittest.mock import patch
 from src.ui import chat
 
 def fake_ask_agent(question, on_step=None, on_chunk=None, on_position=None, history=None):
-    on_position("{START_FEN}", label="Main line", update_board=False)
+    on_position("{START_FEN}", label="Main line")
     return "Here is the idea.\\n[[diagram: Main line]]\\nThat's the point."
 
 with patch("src.ui.chat.ask_agent", fake_ask_agent):
@@ -315,41 +315,49 @@ st.session_state["_path"] = _game_path_from_pgn("")
     assert at.session_state["_path"] is None
 
 
-def test_ask_with_status_does_not_touch_the_free_play_board_during_replay():
-    """Real bug found during planning for game-replay: on_position used to
-    unconditionally overwrite st.session_state.board whenever a tool call
-    reported a position (update_board=True by default). During replay, that
-    board is the free-play board sitting *behind* the visible replay
-    position, not a copy -- evaluating a replay ply would silently corrupt
-    it with no visible symptom until the user exited replay. Must stay
-    completely untouched (same object, not just an equal-looking one) while
-    st.session_state.game_path is not None.
-    """
-    at = AppTest.from_string(f"""
+def test_a_tool_reporting_a_position_never_touches_the_board():
+    """Tools report the positions they touch so the answer can show them as
+    diagrams; they must never replace the board. Replacing it with a fresh
+    chess.Board(fen) erased the move history even when the position was the
+    same one (Evaluate disabled Undo), and a typed question about another
+    line wiped the game in progress. During replay the board is the
+    free-play game sitting behind the visible replay, so it must survive
+    there too."""
+    for replaying in (False, True):
+        at = AppTest.from_string(f"""
 from unittest.mock import patch
 import chess
 import streamlit as st
 from src.ui import chat
 
-st.session_state.game_path = ["{START_FEN}", "{OTHER_FEN}"]
-st.session_state.game_path_index = 0
-original_board = chess.Board("{OTHER_FEN}")
+if {replaying}:
+    st.session_state.game_path = ["{START_FEN}", "{OTHER_FEN}"]
+    st.session_state.game_path_index = 0
+else:
+    st.session_state.game_path = None
+original_board = chess.Board()
+for san in ("e4", "e5"):
+    original_board.push_san(san)
 st.session_state.board = original_board
 
 def fake_ask_agent(question, on_step=None, on_chunk=None, on_position=None, history=None):
-    on_position("{START_FEN}", update_board=True)
+    on_position(original_board.fen())
+    on_position("{OTHER_FEN}")
     return "Evaluation done."
 
 with patch("src.ui.chat.ask_agent", fake_ask_agent):
-    chat.ask_with_status("Evaluate this position")
+    _, touched = chat.ask_with_status("Evaluate this position")
 
-st.session_state["_board_is_same_object"] = st.session_state.board is original_board
-st.session_state["_board_fen"] = st.session_state.board.fen()
+st.session_state["_same_object"] = st.session_state.board is original_board
+st.session_state["_history"] = len(st.session_state.board.move_stack)
+st.session_state["_touched"] = touched
 """)
-    at.run()
-    assert not at.exception
-    assert at.session_state["_board_is_same_object"] is True
-    assert at.session_state["_board_fen"] == OTHER_FEN
+        at.run()
+        assert not at.exception
+        assert at.session_state["_same_object"] is True
+        assert at.session_state["_history"] == 2  # Undo still has moves to undo
+        # The positions still reach the answer as diagrams.
+        assert [fen for fen, _ in at.session_state["_touched"]][-1] == OTHER_FEN
 
 
 def test_example_prompts_render_as_buttons():

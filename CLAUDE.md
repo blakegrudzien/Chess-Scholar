@@ -60,8 +60,9 @@ supporting code already anticipate them, not because they're live features today
   touch devices) and rejects illegal ones locally; every legal move is still
   sent to python-chess (`_attempt_move` in `src/ui/board_panel.py`), which
   has the final say and records the position. Python redraws the board only
-  when its FEN differs from what the browser shows: Reset, Undo, replay,
-  positions from the chat, or a move it rejected (see `wiring.js`). Kept as
+  when its FEN differs from what the browser shows: Reset, Undo, replay, or
+  a move it rejected (see `wiring.js`). Agent tools never move the board;
+  positions an answer touches are shown as inline diagrams instead. Kept as
   two layers on purpose: the browser gives instant feedback, and the server
   never trusts a client-supplied position. Piece art is generated from
   `chess.svg.piece()` via `scripts/generate_board_piece_images.py` for visual

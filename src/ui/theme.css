@@ -505,3 +505,12 @@ button[data-testid="stMainMenuButton"] {
         width: 100%;
     }
 }
+
+/* Streamlit puts a "link to this heading" icon beside every markdown
+   heading, including the section headings inside answers. Phones show it
+   permanently, and on a one-page app it only links back to the same page.
+   The page title opts out with st.title(anchor=False); headings inside
+   markdown text have no such option, so they are hidden here. */
+[data-testid="stHeaderActionElements"] {
+    display: none;
+}

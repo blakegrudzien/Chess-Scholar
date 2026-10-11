@@ -37,9 +37,7 @@ class OnPosition(Protocol):
     same as if this were a concrete class instead of a plain function.
     """
 
-    def __call__(
-        self, fen: str, *, label: str | None = None, update_board: bool = True
-    ) -> None: ...
+    def __call__(self, fen: str, *, label: str | None = None) -> None: ...
 
 
 MODEL = "claude-sonnet-5"
@@ -188,13 +186,12 @@ def build_tools(
     handles a dead connection transparently within the call.
 
     on_position, if given, is called with the FEN behind a position-touching
-    tool call: (fen, *, label=None, update_board=True). Most calls come from
-    _report_position_update scanning evaluate_chess_position's tool_use
-    block; find_similar_corpus_games calls it directly instead, since its
-    FEN only exists in the tool's *output*, not an argument the model
-    supplies. show_opening_line is the one caller passing update_board=False
-    -- an illustrative example line isn't the position a caller's UI should
-    treat as "currently under discussion."
+    tool call: (fen, *, label=None), so the caller can show it as a diagram.
+    Most calls come from _report_position_update scanning
+    evaluate_chess_position's tool_use block; find_similar_corpus_games
+    calls it directly instead, since its FEN only exists in the tool's
+    *output*, not an argument the model supplies. show_opening_line passes
+    the label it was given, which the answer uses to place its diagram.
     """
 
     def _query(fn: Callable, *args, **kwargs):
@@ -412,7 +409,7 @@ def build_tools(
             except ValueError:
                 return f"'{san}' (move {i}) isn't legal in that sequence -- no diagram prepared."
         if on_position is not None:
-            on_position(board.fen(), label=label, update_board=False)
+            on_position(board.fen(), label=label)
         # Deliberately not phrased as "shown". The previous wording ("Shown:
         # <label>") told the model the reader was already looking at the
         # diagram, and it wrote its answer accordingly -- logged answers
@@ -572,8 +569,8 @@ def ask(
     final answer.
 
     If `on_position` is given, it's called with the FEN whenever a turn
-    calls evaluate_chess_position -- meant for a caller to keep a displayed
-    board in sync with whatever position the conversation just touched.
+    calls evaluate_chess_position, so a caller can show the positions an
+    answer drew on as diagrams.
 
     `history`, if given, is prior turns as plain {"role", "content"} dicts
     (each assistant entry just its final text, no tool_use/tool_result

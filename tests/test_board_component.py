@@ -554,3 +554,44 @@ def test_desktop_tour_keeps_its_order_and_says_drag(page) -> None:
     board_text = next(text for title, text, _ in steps if title == "Play on the board")
     assert board_text.startswith("Drag pieces")
     assert "python-chess on the server double-checks" in board_text
+
+
+def test_evaluating_your_own_position_keeps_undo_available(fake_agent_server: str) -> None:
+    """Evaluate used to replace the board with a history-less copy of the
+    same position, disabling Undo."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 1400, "height": 1000})
+        page.goto(fake_agent_server, wait_until="networkidle")
+        page.wait_for_selector(".square-e2", timeout=15000)
+        _drag(page, "e2", "e4")
+        page.wait_for_function(f"{_FEN_CAPTION_JS}?.textContent.includes('4P3')", timeout=10000)
+        undo = page.get_by_role("button", name="Undo last move")
+        assert undo.is_enabled()
+
+        page.get_by_role("button", name="Evaluate this position with Stockfish").click()
+        page.get_by_text("A fake answer for the test.").first.wait_for(timeout=15000)
+        page.wait_for_timeout(1500)
+
+        assert undo.is_enabled()
+        browser.close()
+
+
+def test_answer_headings_have_no_self_links(fake_agent_server: str) -> None:
+    """Streamlit adds a "link to this heading" icon to every markdown
+    heading; phones show it permanently, and on a one-page app it only
+    links back to the same page."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_context(**p.devices["iPhone 13"]).new_page()
+        page.goto(fake_agent_server, wait_until="networkidle")
+        page.wait_for_selector(".square-e2", timeout=15000)
+        page.get_by_role("button", name="Evaluate 1. e4 e5 2. Qh5 for White").click()
+        page.get_by_role("heading", name="Summary").wait_for(timeout=15000)
+        links = page.locator('[data-testid="stHeaderActionElements"]')
+        assert all(not links.nth(i).is_visible() for i in range(links.count()))
+        browser.close()

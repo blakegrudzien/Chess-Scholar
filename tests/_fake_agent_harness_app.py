@@ -3,6 +3,7 @@ fast, offline fakes, for tests/test_board_component.py. The lookup takes 4
 seconds and finds nothing, long enough to interact with the page while it
 runs."""
 
+import re
 import runpy
 import sys
 import time
@@ -20,7 +21,17 @@ def _slow_empty_lookup(*args, **kwargs):
     return []
 
 
-chat.ask_agent = lambda question, **kwargs: "A fake answer for the test."
+def _fake_ask_agent(question, on_position=None, **kwargs):
+    # Reports the board's position the way the real evaluate_chess_position
+    # tool does, for questions asked about the board.
+    match = re.search(r"Current board position: (.+)", question)
+    if match and on_position is not None:
+        on_position(match.group(1).strip())
+    # The heading matches real answers, which use markdown section headings.
+    return "## Summary\n\nA fake answer for the test."
+
+
+chat.ask_agent = _fake_ask_agent
 chat.recommend_resources = _slow_empty_lookup
 chat.log_conversation_best_effort = lambda *args, **kwargs: None
 for getter in (

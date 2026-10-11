@@ -213,25 +213,11 @@ def ask_with_status(
         words_this_turn = 0
         preview_area.empty()
 
-    def on_position(fen: str, *, label: str | None = None, update_board: bool = True) -> None:
-        # `and game_path is None`: during replay, st.session_state.board is
-        # the free-play board sitting *behind* the visible replay, invisible
-        # but still live -- without this guard it would get silently
-        # overwritten by any position-touching tool call that turn.
-        if update_board and st.session_state.game_path is None:
-            try:
-                new_board = chess.Board(fen)
-            except ValueError:
-                return  # a malformed FEN from the model -- leave the board as it was
-            st.session_state.board = new_board
-            # A fresh chess.Board(fen) has no move history, so an illegal-move
-            # warning from before this update no longer corresponds to
-            # anything real on the new board.
-            st.session_state.last_illegal_attempt = None
-            st.session_state.board_generation += 1
-        # show_opening_line already guarantees a valid fen (replayed via
-        # python-chess before this is ever called), so no re-validation
-        # needed on the update_board=False path.
+    def on_position(fen: str, *, label: str | None = None) -> None:
+        # Recorded for the answer's diagrams only. The board is the
+        # visitor's own game: replacing it with chess.Board(fen) would erase
+        # its move history even for the same position, and a question about
+        # some other line would wipe the game in progress.
         if not touched_fens or touched_fens[-1][0] != fen:
             touched_fens.append((fen, label))
 
