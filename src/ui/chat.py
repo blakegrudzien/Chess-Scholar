@@ -35,6 +35,7 @@ from src.recommendation.pipeline import (
 from src.ui.board_panel import render_board_panel
 from src.ui.conversation_log import log_conversation_best_effort
 from src.ui.help_text import FEN_HELP
+from src.ui.progress_bar import FINISH_SECONDS, finishing_bar_html, running_bar_html
 from src.ui.resources import (
     get_anthropic_client,
     get_db_pool,
@@ -125,9 +126,10 @@ def ask_agent(
 def ask_with_status(
     question: str, *, history: list[dict[str, str]] | None = None
 ) -> tuple[str, list[tuple[str, str | None]]]:
-    """Run ask_agent, showing each tool-calling step live in an st.status
-    panel and streaming the final answer into view as it generates, rather
-    than a blank spinner followed by the whole answer appearing at once.
+    """Run ask_agent, showing a progress bar (see progress_bar.py) and each
+    tool-calling step live, and streaming the final answer into view as it
+    generates, rather than a blank spinner followed by the whole answer
+    appearing at once.
     Renders everything itself, diagrams included (see _render_answer_content)
     -- callers should not render `answer` again afterward.
 
@@ -144,18 +146,21 @@ def ask_with_status(
     interactions as implicit yield points during a running script, so a
     click interrupts this at the next word reveal.
     """
-    status = st.status("Thinking...", expanded=True)
-    with status:
-        # Nested inside the status box, not a sibling of it: a tool-calling
-        # turn's rationale and the eventual final answer both start out as
-        # plain streamed text (nothing distinguishes them until a tool_use
-        # block does or doesn't show up at the end of the turn), so on_step
-        # below only has to promote this preview to a permanent
-        # status.write() line. As a top-level placeholder instead, a
-        # turn's text visibly jumped into the box the moment a tool call
-        # was confirmed.
+    started_at = time.monotonic()
+    progress_area = st.empty()
+    progress_area.html(running_bar_html())
+    # Tool status lines and the live preview of the turn being streamed.
+    # The preview sits inside this area, below the lines, because a turn's
+    # text only turns out to be a tool-call rationale once the turn ends: on
+    # a tool call, on_step promotes it to a permanent line where it already
+    # is, instead of it visibly jumping into place. The whole area collapses
+    # into a "Done" box once the answer is in.
+    work_area = st.empty()
+    with work_area.container():
+        lines_area = st.container()
         preview_area = st.empty()
-    # Declared after the status box: message_panel autoscrolls to follow
+    step_lines: list[str] = []
+    # Declared after the work area: message_panel autoscrolls to follow
     # streamed content, and a placeholder's DOM position is fixed at
     # creation time, so declaring this first would pin it above the
     # streamed text and scroll it out of view on a long answer.
@@ -183,7 +188,8 @@ def ask_with_status(
 
     def on_step(text: str) -> None:
         nonlocal accumulated_text, words_this_turn
-        status.write(text)
+        step_lines.append(text)
+        lines_area.markdown(text)
         accumulated_text = ""
         words_this_turn = 0
         preview_area.empty()
@@ -234,18 +240,21 @@ def ask_with_status(
         )
         final_area.markdown(answer)
     else:
-        # The completed answer goes to final_area, not preview_area --
-        # preview_area is nested inside the status box (see this function's
-        # own docstring), which is about to collapse to "Done" a few lines
-        # down, so leaving the final answer there would hide it inside a
-        # collapsed expander the user has to click open. final_area was
-        # declared as a sibling of the status box specifically so the
-        # answer stays visible once the box collapses.
+        # The completed answer goes to final_area, not preview_area:
+        # preview_area lives in the work area, which collapses into a "Done"
+        # box below, and would hide the answer inside it.
         with final_area.container():
             _render_answer_content(answer, touched_fens)
 
-    status.update(label="Done", state="complete", expanded=False)
-    preview_area.empty()
+    # The bar finishes from wherever it is, then the tool lines collapse
+    # into a "Done" box. The answer above is already fully rendered, so the
+    # short pause only lets the bar visibly complete.
+    progress_area.html(finishing_bar_html(time.monotonic() - started_at))
+    time.sleep(FINISH_SECONDS)
+    progress_area.empty()
+    with work_area.container(), st.status("Done", state="complete", expanded=False):
+        for line in step_lines:
+            st.markdown(line)
     stop_placeholder.empty()
     return answer, touched_fens
 

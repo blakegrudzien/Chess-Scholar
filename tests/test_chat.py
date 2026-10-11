@@ -251,6 +251,38 @@ st.session_state["_touched"] = touched
     assert "[[diagram:" not in combined
 
 
+def test_ask_with_status_collapses_tool_lines_into_done_and_removes_the_bar():
+    at = AppTest.from_string("""
+from unittest.mock import patch
+from src.ui import chat
+
+def fake_ask_agent(question, on_step=None, on_chunk=None, on_position=None, history=None):
+    on_step("Layer 1 (structured search): pulling opening statistics.")
+    on_step("Layer 3 (Stockfish): evaluating the position.")
+    return "The answer."
+
+with patch("src.ui.chat.ask_agent", fake_ask_agent):
+    chat.ask_with_status("What's the best response to 1. e4?")
+""")
+    at.run()
+    assert not at.exception
+    nodes = []
+
+    def walk(node) -> None:
+        nodes.append(node)
+        for child in (getattr(node, "children", None) or {}).values():
+            walk(child)
+
+    for node in at.main.children.values():
+        walk(node)
+    done = [n for n in nodes if n.type == "status" and n.label == "Done"]
+    assert len(done) == 1
+    step_text = " ".join(c.value for c in done[0].children.values() if c.type == "markdown")
+    assert "Layer 1" in step_text and "Layer 3" in step_text
+    # The bar is gone once the answer is in.
+    assert not [n for n in nodes if n.type == "html"]
+
+
 def test_game_path_from_pgn_returns_every_ply_fen():
     pgn = "1. e4 e5 2. Nf3 Nc6 *"
     at = AppTest.from_string(f"""
