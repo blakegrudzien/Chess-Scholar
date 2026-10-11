@@ -18,6 +18,8 @@ import re
 import tempfile
 import time
 from collections.abc import Callable
+from concurrent.futures import Future
+from dataclasses import dataclass
 
 import anthropic
 import chess
@@ -30,6 +32,7 @@ from src.ingestion.pgn_parser import parse_pgn
 from src.recommendation.pipeline import (
     ChessbaseGameRecommendation,
     LichessStudyRecommendation,
+    Recommendation,
     recommend_resources,
 )
 from src.ui.board_panel import render_board_panel
@@ -42,6 +45,7 @@ from src.ui.resources import (
     get_engine_pool,
     get_lichess_http_client,
     get_lichess_pacer,
+    get_lookup_executor,
     get_voyage,
 )
 
@@ -290,75 +294,91 @@ def _lookup_context(history: list) -> str:
     return lookup
 
 
+@dataclass
+class _ResourceLookup:
+    """A "Find related resources" lookup for the latest answer, running in
+    the background. `revealed` records whether its results have been shown."""
+
+    future: Future[list[Recommendation]]
+    revealed: bool = False
+
+
+def _start_resource_lookup() -> None:
+    """Start the lookup for the exchange just answered, on a background
+    thread (resources.get_lookup_executor), so reading the answer and using
+    the board can't cancel it. Replaces any lookup still running for an
+    earlier answer, whose results are then never shown.
+
+    The shared clients are resolved here, on the script thread, and handed
+    to the worker, which only makes network calls.
+    """
+    question = _lookup_context(st.session_state.chat_history)
+    db_pool, voyage = get_db_pool(), get_voyage()
+    client, http_client, pacer = (
+        get_anthropic_client(),
+        get_lichess_http_client(),
+        get_lichess_pacer(),
+    )
+
+    def lookup() -> list[Recommendation]:
+        try:
+            return recommend_resources(
+                question, db_pool, voyage, client=client, http_client=http_client, pacer=pacer
+            )
+        except Exception:
+            # Logged here because nothing waits on this thread to log it;
+            # re-raised so the button can show the lookup failed.
+            logger.exception("recommend_resources failed")
+            raise
+
+    st.session_state.resource_lookup = _ResourceLookup(get_lookup_executor().submit(lookup))
+
+
+@st.fragment(run_every=2)
+def _render_pending_resources_button() -> None:
+    """The disabled button shown while a lookup runs. Rechecks every two
+    seconds without rerunning the page, and triggers one full rerun when
+    the lookup finishes so the ready button replaces this one."""
+    lookup = st.session_state.resource_lookup
+    if lookup is not None and lookup.future.done():
+        st.rerun()
+    st.button("Finding related resources...", key="find_resources", disabled=True)
+
+
 def _render_resource_recommendations(*, disabled: bool = False) -> None:
-    """Offers to look up related Lichess studies and corpus games for the
-    most recent question, and renders whatever comes back. Only shown for
-    the latest exchange, not every past one in the history.
+    """The "Find related resources" button for the latest answer, and the
+    studies and games it reveals. The lookup itself starts in the background
+    as soon as an answer finishes (see _start_resource_lookup); the button
+    stays disabled until its results are ready, then shows them at once.
 
     The button always renders, even on a fresh page -- disabled rather than
     absent, both as a visible preview of the feature and so it's a stable
-    tutorial_overlay spotlight target (a conditionally-existing element
-    can't be reliably spotlighted from a fresh page).
-
-    st.session_state.resource_recommendations is the sentinel for "already
-    looked up this question": None means not yet requested, a list (possibly
-    empty) means it has been. Reset to None in _submit_question after a new
-    answer, so a fresh question always gets a fresh button.
+    tutorial_overlay spotlight target. Every state uses the same key for the
+    same reason.
     """
-    history = st.session_state.chat_history
-    eligible = len(history) >= 2 and history[-1][0] == "assistant"
-
-    if st.session_state.resource_recommendations is None:
+    lookup: _ResourceLookup | None = st.session_state.resource_lookup
+    if lookup is None:
         # secondary, not primary: "Evaluate this position with Stockfish" is
         # the page's one primary action -- two competing primary-styled
         # buttons would dilute that visual hierarchy.
-        clicked = st.button(
-            "Find related resources",
-            key="find_resources",
-            type="secondary",
-            disabled=disabled or not eligible,
-        )
-        if not eligible:
+        st.button("Find related resources", key="find_resources", disabled=True)
+        if not st.session_state.chat_history:
             st.caption("Ask something first, then look here for related studies and games.")
-            return
-        if not clicked:
-            return
-        question = _lookup_context(history)
-        # Doherty threshold: this regularly takes 20+ seconds, past the
-        # point where a bare spinner keeps people's attention. A static but
-        # honest description of the stages involved, not live progress --
-        # unlike ask_with_status, this isn't wired to recommend_resources'
-        # actual tool calls via on_step.
-        with st.status("Looking for related resources...", expanded=True) as status:
-            status.write("Searching the study library for relevant chapters.")
-            status.write("Checking whether a matching master game exists in the corpus.")
-            try:
-                st.session_state.resource_recommendations = recommend_resources(
-                    question,
-                    get_db_pool(),
-                    get_voyage(),
-                    client=get_anthropic_client(),
-                    http_client=get_lichess_http_client(),
-                    pacer=get_lichess_pacer(),
-                )
-            except anthropic.APIError:
-                # This call chains Anthropic + Voyage + live Lichess HTTP
-                # behind one click; caught here (inside the `with`, so
-                # `status` is still live to update) rather than around it,
-                # so resource_recommendations stays None and the button
-                # reappears on the next rerun.
-                logger.exception("recommend_resources failed")
-                status.update(
-                    label="Something went wrong looking that up. Try again in a moment.",
-                    state="error",
-                )
-                return
-            status.update(label="Done", state="complete", expanded=False)
-
-    recommendations = st.session_state.resource_recommendations
-    if not recommendations:
-        st.caption("Nothing in the study library or corpus was a close enough match to recommend.")
         return
+    if not lookup.future.done():
+        _render_pending_resources_button()
+        return
+    if lookup.future.exception() is not None:
+        st.button("Couldn't load related resources", key="find_resources", disabled=True)
+        return
+    recommendations = lookup.future.result()
+    if not recommendations:
+        st.button("No related resources found", key="find_resources", disabled=True)
+        return
+    if not lookup.revealed:
+        if not st.button("Show related resources", key="find_resources", disabled=disabled):
+            return
+        lookup.revealed = True
 
     for idx, rec in enumerate(recommendations):
         if isinstance(rec, LichessStudyRecommendation):
@@ -692,6 +712,8 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> bool:
         )
         return False
     request_times.append(now)
+    # The previous answer's lookup no longer applies; its results are dropped.
+    st.session_state.resource_lookup = None
 
     history = _build_message_history()  # prior turns, before this one is appended below
     st.session_state.chat_history.append(("user", question, fen_context, []))
@@ -703,7 +725,7 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> bool:
     with st.chat_message("assistant", avatar=_CHAT_AVATARS["assistant"]):
         answer, touched_fens = ask_with_status(sent_question, history=history)
     st.session_state.chat_history.append(("assistant", answer, None, touched_fens))
-    st.session_state.resource_recommendations = None
+    _start_resource_lookup()
 
     # See conversation_log.log_conversation_best_effort's own docstring:
     # it guarantees on its own that a logging failure can't reach here.
@@ -768,8 +790,8 @@ def render_main_screen() -> None:
         )
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
-    if "resource_recommendations" not in st.session_state:
-        st.session_state.resource_recommendations = None
+    if "resource_lookup" not in st.session_state:
+        st.session_state.resource_lookup = None
     if "board" not in st.session_state:
         st.session_state.board = chess.Board()
     if "last_illegal_attempt" not in st.session_state:

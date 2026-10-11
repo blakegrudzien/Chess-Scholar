@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import anthropic
 import httpx
@@ -55,6 +56,15 @@ def get_anthropic_client() -> anthropic.Anthropic:
 @st.cache_resource
 def get_lichess_http_client() -> httpx.Client:
     return default_http_client()
+
+
+@st.cache_resource
+def get_lookup_executor() -> ThreadPoolExecutor:
+    # Runs "Find related resources" lookups in the background, so a board
+    # move or any other rerun can't cancel one mid-way (a lookup takes
+    # ~40s). Shared by every session; each lookup mostly waits on network
+    # calls, so a few workers cover many concurrent visitors.
+    return ThreadPoolExecutor(max_workers=4, thread_name_prefix="resource-lookup")
 
 
 @st.cache_resource

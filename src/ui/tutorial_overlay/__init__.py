@@ -70,15 +70,15 @@ _STEPS = [
         ),
     },
     {
-        # Grayed out until eligible (see _render_resource_recommendations'
-        # own docstring) rather than absent, so this selector always
-        # resolves, on a fresh page included.
+        # Grayed out until its results are ready (see _render_resource_
+        # recommendations' own docstring) rather than absent, so this
+        # selector always resolves, on a fresh page included.
         "selector": ".st-key-find_resources",
         "title": "Find related resources",
         "text": (
-            "Grayed out for now -- once you've asked something, this "
-            "pulls matching Lichess studies and annotated games from the "
-            "corpus for that question."
+            "After each answer, matching Lichess studies and master games "
+            "from the corpus are found in the background while you read. "
+            "This unlocks when they're ready."
         ),
     },
     {

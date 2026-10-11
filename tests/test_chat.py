@@ -418,27 +418,81 @@ _render_example_prompts()
     )
 
 
-def test_find_related_resources_shows_a_fallback_instead_of_crashing_on_api_failure():
-    """Regression test: recommend_resources chains Anthropic + Voyage + live
-    Lichess HTTP behind one button click, and nothing caught a failure in
-    any of them -- an anthropic.APIError (rate limit, dropped connection,
-    a 5xx) used to crash the whole script. resource_recommendations must
-    stay None (not an empty list) on failure, so the button reappears for
-    a retry instead of wrongly claiming nothing relevant was found.
+_LOOKUP_APP = """
+from concurrent.futures import Future
+import streamlit as st
+from src.ui import chat
+from src.recommendation.pipeline import LichessStudyRecommendation
 
-    Every get_*() resource getter (get_db_pool, get_voyage, ...) is mocked
-    too, not just recommend_resources -- they're evaluated as recommend_
-    resources' own call arguments, so they run (for real, hitting a real
-    DATABASE_URL env var this test environment has no reason to have)
-    before the mocked function is ever reached otherwise. Real production
-    calls don't hit this: by the time this button is clickable, a full Q&A
-    exchange has already run through ask_agent, which already forced every
-    one of these st.cache_resource-cached getters to succeed once.
-    """
+future = Future()
+{setup}
+if "resource_lookup" not in st.session_state:
+    st.session_state.chat_history = [
+        ("user", "How should White meet the Sicilian?", None, []),
+        ("assistant", "The Open Sicilian is the main try.", None, []),
+    ]
+    st.session_state.resource_lookup = chat._ResourceLookup(future)
+chat._render_resource_recommendations()
+"""
+
+_STUDY = (
+    "LichessStudyRecommendation(study_id='s1', study_title='All about the Sicilian', "
+    "chapter_id='c1', chapter_name='Open Sicilian', "
+    "embed_url='https://lichess.org/study/embed/s1/c1', blurb='Covers the main line.')"
+)
+
+
+def _find_button(at: AppTest):
+    return next(b for b in at.button if b.key == "find_resources")
+
+
+def test_resources_button_is_disabled_while_the_lookup_runs():
+    at = AppTest.from_string(_LOOKUP_APP.format(setup=""))
+    at.run()
+    assert not at.exception
+    button = _find_button(at)
+    assert button.disabled
+    assert button.label == "Finding related resources..."
+
+
+def test_resources_button_reveals_results_once_the_lookup_finishes():
+    at = AppTest.from_string(_LOOKUP_APP.format(setup=f"future.set_result([{_STUDY}])"))
+    at.run()
+    button = _find_button(at)
+    assert not button.disabled
+    assert button.label == "Show related resources"
+    assert not [n for n in at.main.children.values() if n.type == "html"]
+
+    button.click().run()
+
+    assert not at.exception
+    assert any("All about the Sicilian" in str(n.proto) for n in at.get("html"))
+
+
+def test_resources_button_says_so_when_nothing_was_found():
+    at = AppTest.from_string(_LOOKUP_APP.format(setup="future.set_result([])"))
+    at.run()
+    button = _find_button(at)
+    assert button.disabled
+    assert button.label == "No related resources found"
+
+
+def test_resources_button_shows_a_failed_lookup_instead_of_crashing():
+    """The lookup chains Anthropic, Voyage and live Lichess calls; any of
+    them can fail, and that must show on the button, not crash the page."""
+    at = AppTest.from_string(
+        _LOOKUP_APP.format(setup="future.set_exception(RuntimeError('Lichess timed out'))")
+    )
+    at.run()
+    assert not at.exception
+    button = _find_button(at)
+    assert button.disabled
+    assert button.label == "Couldn't load related resources"
+
+
+def test_a_new_answer_replaces_the_previous_lookup():
     at = AppTest.from_string("""
 from unittest.mock import MagicMock, patch
-import httpx
-import anthropic
 import streamlit as st
 from src.ui import chat
 
@@ -446,27 +500,31 @@ st.session_state.chat_history = [
     ("user", "How should White meet the Sicilian?", None, []),
     ("assistant", "The Open Sicilian is the main try.", None, []),
 ]
-st.session_state.resource_recommendations = None
-
-error = anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com"))
+stale = object()
+st.session_state.resource_lookup = stale
 with (
+    patch("src.ui.chat.ask_with_status", return_value=("Play the Ruy Lopez.", [])),
+    patch("src.ui.chat.log_conversation_best_effort"),
     patch("src.ui.chat.get_db_pool", return_value=MagicMock()),
     patch("src.ui.chat.get_voyage", return_value=MagicMock()),
     patch("src.ui.chat.get_anthropic_client", return_value=MagicMock()),
     patch("src.ui.chat.get_lichess_http_client", return_value=MagicMock()),
     patch("src.ui.chat.get_lichess_pacer", return_value=MagicMock()),
-    patch("src.ui.chat.recommend_resources", side_effect=error),
+    patch("src.ui.chat.recommend_resources", return_value=[]) as lookup,
 ):
-    chat._render_resource_recommendations()
+    chat._submit_question("What about 1. e4 e5?")
+    result = st.session_state.resource_lookup.future.result(timeout=5)
+st.session_state["_replaced"] = st.session_state.resource_lookup is not stale
+st.session_state["_result"] = result
+st.session_state["_context"] = lookup.call_args.args[0]
 """)
     at.run()
     assert not at.exception
-    find_button = next(b for b in at.button if b.label == "Find related resources")
-
-    find_button.click().run()
-
-    assert not at.exception
-    assert at.session_state.resource_recommendations is None
+    assert at.session_state["_replaced"]
+    assert at.session_state["_result"] == []
+    # Looked up for the new exchange, answer included (see _lookup_context).
+    assert "What about 1. e4 e5?" in at.session_state["_context"]
+    assert "Ruy Lopez" in at.session_state["_context"]
 
 
 def test_describe_uploaded_game_shows_a_friendly_error_for_a_header_delimiter_collision():
@@ -634,6 +692,8 @@ with (
     patch("src.ui.chat.ask_agent", return_value="Play 3.d4."),
     patch("src.ui.chat.get_db_pool", return_value=MagicMock()),
     patch("src.ui.chat.log_conversation_best_effort", mock_log),
+    # Stubbed so this test doesn't start a real background resource lookup.
+    patch("src.ui.chat._start_resource_lookup"),
 ):
     chat._submit_question(
         "How should White meet the Sicilian?", fen_context="8/8/8/8/8/8/8/4K2k w - - 0 1"

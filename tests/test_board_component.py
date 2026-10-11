@@ -473,3 +473,34 @@ def test_board_refits_when_the_screen_narrows(phone_page) -> None:
         " return h.right - a.left <= 328; })()",
         timeout=5000,
     )
+
+
+@pytest.fixture(scope="module")
+def fake_agent_server() -> Iterator[str]:
+    yield from _launch_streamlit_app("tests/_fake_agent_harness_app.py")
+
+
+def test_resource_lookup_runs_in_the_background_and_unlocks_the_button(
+    fake_agent_server: str,
+) -> None:
+    """The lookup used to run inside the page's own script run, so any
+    interaction (a board move included) cancelled it. It now starts on its
+    own after each answer and survives the page being used meanwhile."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 1400, "height": 1000})
+        page.goto(fake_agent_server, wait_until="networkidle")
+        page.wait_for_selector(".square-e2", timeout=15000)
+        page.get_by_role("button", name="Evaluate 1. e4 e5 2. Qh5 for White").click()
+
+        finding = page.get_by_role("button", name="Finding related resources...")
+        finding.wait_for(timeout=15000)
+        assert finding.is_disabled()
+
+        _drag(page, "e2", "e4")  # a rerun while the lookup is running
+
+        done = page.get_by_role("button", name="No related resources found")
+        done.wait_for(timeout=15000)
+        browser.close()
