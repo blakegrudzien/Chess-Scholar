@@ -504,3 +504,53 @@ def test_resource_lookup_runs_in_the_background_and_unlocks_the_button(
         done = page.get_by_role("button", name="No related resources found")
         done.wait_for(timeout=15000)
         browser.close()
+
+
+_TOUR_OVERLAP_JS = """(() => {
+  const s = document.querySelector('.tour-spotlight').getBoundingClientRect();
+  const t = document.querySelector('.tour-tooltip').getBoundingClientRect();
+  return Math.max(0, Math.min(s.bottom, t.bottom) - Math.max(s.top, t.top));
+})()"""
+
+
+def _walk_tour(page) -> list[tuple[str, str, float]]:
+    """(title, text, px of spotlight covered by the tooltip) for each step."""
+    page.get_by_role("button", name="How this works").click()
+    page.locator(".tour-tooltip").wait_for(state="visible", timeout=10000)
+    steps = []
+    while page.locator(".tour-tooltip").count():
+        page.wait_for_timeout(900)  # let the smooth scroll and reposition settle
+        steps.append(
+            (
+                page.locator(".tour-title").inner_text(),
+                page.locator(".tour-text").inner_text(),
+                page.evaluate(_TOUR_OVERLAP_JS),
+            )
+        )
+        page.locator(".tour-next").click()
+    return steps
+
+
+def test_phone_tour_follows_page_order_and_never_covers_its_target(phone_page) -> None:
+    steps = _walk_tour(phone_page)
+    assert [title for title, _, _ in steps] == [
+        "Play on the board",
+        "Ask about a position",
+        "Analyze with Stockfish",
+        "Find related resources",
+        "Ask anything about chess",
+        "Upload a game",
+    ]
+    assert all(overlap == 0 for _, _, overlap in steps), steps
+    board_text = steps[0][1]
+    assert board_text.startswith("Tap a piece")
+    # The room added at the page end for the sheet goes away with the tour.
+    assert phone_page.locator(".tour-sheet-spacer").count() == 0
+
+
+def test_desktop_tour_keeps_its_order_and_says_drag(page) -> None:
+    steps = _walk_tour(page)
+    assert steps[0][0] == "Ask anything about chess"
+    board_text = next(text for title, text, _ in steps if title == "Play on the board")
+    assert board_text.startswith("Drag pieces")
+    assert "python-chess on the server double-checks" in board_text

@@ -48,9 +48,14 @@ _STEPS = [
         "selector": ".st-key-tutorial_board_target",
         "title": "Play on the board",
         "text": (
-            "Drag pieces to make moves. Legality is checked by "
-            "python-chess, not the board itself, so an illegal drop just "
-            "snaps back."
+            "Drag pieces to make moves. Illegal moves are rejected right on "
+            "the board, and python-chess on the server double-checks every move."
+        ),
+        # Phones move pieces by tapping (see board_component/wiring.js).
+        "phoneText": (
+            "Tap a piece, then tap where it should go. Illegal moves are "
+            "rejected right on the board, and python-chess on the server "
+            "double-checks every move."
         ),
     },
     {
@@ -92,6 +97,12 @@ _STEPS = [
 ]
 
 
+# On phones the board column comes first and the chat last (see theme.css),
+# so the tour follows that top-to-bottom order instead of the desktop one:
+# board, ask about a position, Evaluate, resources, chat, upload.
+_PHONE_STEP_ORDER = [1, 2, 3, 4, 0, 5]
+
+
 def render_tutorial_trigger() -> None:
     """A small "How this works" button that launches the tour.
 
@@ -116,6 +127,10 @@ def render_tutorial_trigger() -> None:
         st.session_state.tutorial_launch_id += 1
 
     _tutorial_component(
-        data={"launchId": st.session_state.tutorial_launch_id, "steps": _STEPS},
+        data={
+            "launchId": st.session_state.tutorial_launch_id,
+            "steps": _STEPS,
+            "phoneStepOrder": _PHONE_STEP_ORDER,
+        },
         height=1,
     )

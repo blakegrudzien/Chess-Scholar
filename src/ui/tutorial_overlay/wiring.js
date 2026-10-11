@@ -5,11 +5,18 @@
 // network round trip.
 export default function (component) {
   const { data } = component;
-  const { launchId, steps } = data;
+  const { launchId } = data;
 
   // launchId 0 means the button has never been clicked (see __init__.py's
   // docstring for why this is a counter, not a bool) -- stay dormant.
   if (!launchId) return undefined;
+
+  // Phones (the layout's 640px breakpoint, see theme.css) get the steps in
+  // their own page order, their own wording where a step has one, and the
+  // tooltip as a bottom sheet: the board and chat are too tall on a phone
+  // screen to fit a floating tooltip beside them without covering them.
+  const isPhone = window.matchMedia("(max-width: 640px)").matches;
+  const steps = isPhone ? data.phoneStepOrder.map((i) => data.steps[i]) : data.steps;
 
   let stepIndex = 0;
   let target = null;
@@ -22,7 +29,7 @@ export default function (component) {
   spotlight.className = "tour-spotlight";
 
   const tooltip = document.createElement("div");
-  tooltip.className = "tour-tooltip";
+  tooltip.className = isPhone ? "tour-tooltip tour-sheet" : "tour-tooltip";
   tooltip.innerHTML = `
     <div class="tour-step-label"></div>
     <h4 class="tour-title"></h4>
@@ -91,7 +98,8 @@ export default function (component) {
     spotlight.style.left = `${rect.left - pad}px`;
     spotlight.style.width = `${rect.width + pad * 2}px`;
     spotlight.style.height = `${rect.height + pad * 2}px`;
-    positionTooltip(rect);
+    // The bottom sheet is placed by CSS; only the floating tooltip moves.
+    if (!isPhone) positionTooltip(rect);
     reveal();
   }
 
@@ -106,6 +114,30 @@ export default function (component) {
   // leaves a dead end. Searching forward regardless of which button was
   // pressed strands the tour on one step, with Back and Next both landing
   // on the same resolved index.
+  // Phones: scroll the target into the space between Streamlit's header and
+  // the bottom sheet, centred there if it fits and top-aligned if not.
+  // Streamlit scrolls its own main container, not the window.
+  // The chat and its input are the last things on a phone page, so there is
+  // nothing below them to scroll into: without extra room they would stay
+  // behind the sheet. A spacer the sheet's height is added for the tour's
+  // duration and removed by close().
+  const pageEnd = document.querySelector('[data-testid="stMainBlockContainer"]');
+  const spacer = document.createElement("div");
+  spacer.className = "tour-sheet-spacer";
+  if (isPhone && pageEnd) pageEnd.appendChild(spacer);
+
+  function scrollAboveSheet() {
+    spacer.style.height = `${tooltip.getBoundingClientRect().height}px`;
+    const header = document.querySelector('[data-testid="stHeader"]');
+    const areaTop = (header ? header.getBoundingClientRect().bottom : 0) + 8;
+    const areaBottom = window.innerHeight - tooltip.getBoundingClientRect().height - 8;
+    const rect = target.getBoundingClientRect();
+    const spare = areaBottom - areaTop - rect.height;
+    const desiredTop = spare > 0 ? areaTop + spare / 2 : areaTop;
+    const scroller = target.closest('[data-testid="stMain"]') || document.scrollingElement;
+    scroller.scrollBy({ top: rect.top - desiredTop, behavior: "smooth" });
+  }
+
   function findStep(start, direction) {
     let i = start;
     while (i >= 0 && i < steps.length) {
@@ -131,13 +163,14 @@ export default function (component) {
     const step = steps[stepIndex];
     stepLabelEl.textContent = `Step ${stepIndex + 1} of ${steps.length}`;
     titleEl.textContent = step.title;
-    textEl.textContent = step.text;
+    textEl.textContent = (isPhone && step.phoneText) || step.text;
     // Not just stepIndex === 0 -- the first *resolvable* step (e.g. Step 2
     // if Step 1's element isn't in the DOM yet) has nowhere valid to go
     // back to either, even though its own index isn't 0.
     backBtn.disabled = findStep(stepIndex - 1, -1) === -1;
     nextBtn.textContent = stepIndex === steps.length - 1 ? "Done" : "Next";
-    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    if (isPhone) scrollAboveSheet();
+    else target.scrollIntoView({ block: "center", behavior: "smooth" });
     // Two rAFs: one to let the browser commit the scroll, one to let
     // layout settle after it, before measuring the target's post-scroll
     // position.
@@ -145,6 +178,7 @@ export default function (component) {
   }
 
   function close() {
+    spacer.remove();
     backdrop.remove();
     spotlight.remove();
     tooltip.remove();

@@ -100,3 +100,17 @@
   border-color: #6b1e2b;
   color: #ede1cc;
 }
+
+/* Phones: the tooltip becomes a bottom sheet spanning the screen width,
+   and wiring.js scrolls each step's target into the space above it. */
+.tour-tooltip.tour-sheet {
+  top: auto;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: auto;
+  max-width: none;
+  border-width: 1px 0 0 0;
+  border-radius: 8px 8px 0 0;
+  padding: 16px 20px calc(16px + env(safe-area-inset-bottom));
+}
