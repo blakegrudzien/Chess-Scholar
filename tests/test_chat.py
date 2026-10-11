@@ -707,3 +707,27 @@ st.session_state["_call_args"] = mock_log.call_args
     assert call.args[1] == "How should White meet the Sicilian?"
     assert call.args[2] == "8/8/8/8/8/8/8/4K2k w - - 0 1"
     assert call.args[3] == "Play 3.d4."
+
+
+def test_real_status_lines_are_not_mistaken_for_an_answer():
+    from src.ui.chat import _looks_like_answer
+
+    # Real tool-call status lines from the app's logs, the longest ~215 chars.
+    for status_line in (
+        "Checking multiple layers at once: Layer 1 stats on the Sicilian family and "
+        "common second moves, Layer 2 strategic commentary on anti-Sicilian systems, "
+        "and Layer 3 engine comparison of White's main options after 1.e4 c5.",
+        "Retrying the Layer 1 ECO summary call that failed due to a connection error, "
+        "and adding stats for the two main Sicilian branches (Open Sicilian and Closed "
+        "Sicilian) for comparison.",
+        "I'll check both the engine evaluation of the resulting position and how the "
+        "database classifies/handles this",
+    ):
+        assert not _looks_like_answer(status_line)
+
+
+def test_long_text_or_a_line_break_counts_as_an_answer():
+    from src.ui.chat import _looks_like_answer
+
+    assert _looks_like_answer("**2. Qh5?! Evaluation**\n")
+    assert _looks_like_answer("word " * 70)

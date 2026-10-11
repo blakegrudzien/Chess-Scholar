@@ -161,9 +161,16 @@ def ask_with_status(
     # into a "Done" box once the answer is in.
     work_area = st.empty()
     with work_area.container():
-        lines_area = st.container()
+        lines_area = st.empty()
         preview_area = st.empty()
     step_lines: list[str] = []
+    lines_visible = True
+
+    def show_lines() -> None:
+        with lines_area.container():
+            for line in step_lines:
+                st.markdown(line)
+
     # Declared after the work area: message_panel autoscrolls to follow
     # streamed content, and a placeholder's DOM position is fixed at
     # creation time, so declaring this first would pin it above the
@@ -177,10 +184,15 @@ def ask_with_status(
     touched_fens: list[tuple[str, str | None]] = []
 
     def on_chunk(delta: str) -> None:
-        nonlocal accumulated_text, words_this_turn
+        nonlocal accumulated_text, words_this_turn, lines_visible
         pieces = _WORD_SPLIT_RE.findall(delta) or [delta]
         for piece in pieces:
             accumulated_text += piece
+            # Once the streaming turn is clearly the answer, the status
+            # lines above it make way; they return in the "Done" box.
+            if lines_visible and _looks_like_answer(accumulated_text):
+                lines_area.empty()
+                lines_visible = False
             # Strip diagram markers before the live preview, not just at
             # final render -- otherwise raw "[[diagram: ...]]" syntax
             # flashes on screen for the word or two it takes the closing
@@ -191,9 +203,12 @@ def ask_with_status(
                 time.sleep(STREAM_WORD_DELAY_SECONDS)
 
     def on_step(text: str) -> None:
-        nonlocal accumulated_text, words_this_turn
+        nonlocal accumulated_text, words_this_turn, lines_visible
         step_lines.append(text)
-        lines_area.markdown(text)
+        # Also restores the lines if a long status line was briefly taken
+        # for the start of the answer.
+        show_lines()
+        lines_visible = True
         accumulated_text = ""
         words_this_turn = 0
         preview_area.empty()
@@ -532,6 +547,18 @@ def _describe_uploaded_game(
         f"{game_description} Find similar games in the corpus and give me a brief, "
         "illustrative comparison -- a few sentences, not a full report."
     ), notices
+
+
+# A streaming turn's text only turns out to be a tool-call status line or the
+# answer once the turn ends. Status lines are one sentence (the longest seen
+# in logs is ~215 characters) and never contain a line break, so text past
+# this length, or with a line break (answers often open with a heading), is
+# treated as the answer starting.
+ANSWER_DETECTION_CHARS = 300
+
+
+def _looks_like_answer(streamed_text: str) -> bool:
+    return len(streamed_text) > ANSWER_DETECTION_CHARS or "\n" in streamed_text.lstrip()
 
 
 DIAGRAM_SIZE_PX = 180
