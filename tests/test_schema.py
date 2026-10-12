@@ -100,3 +100,21 @@ def test_chunks_source_type_check_accepts_the_two_documented_values(conn):
 def test_chunks_source_type_check_rejects_an_invalid_value(conn):
     with pytest.raises(psycopg2.errors.CheckViolation):
         _insert_chunk(conn, "h1", "not_a_real_source_type")
+
+
+def test_example_answers_round_trip(conn):
+    from src.recommendation.pipeline import ChessbaseGameRecommendation, LichessStudyRecommendation
+    from src.ui.example_answers import CachedAnswer, load_cached_answers, save_cached_answer
+
+    recs = [
+        LichessStudyRecommendation("s1", "Sicilian", "c1", "Open", "https://lichess.org/x", "Why."),
+        ChessbaseGameRecommendation("g1", "A", "B", "Event", "1. e4 *", "Why not."),
+    ]
+    fens = [("8/8/8/8/8/8/8/4K2k w - - 0 1", "Main line"), ("8/8/8/8/8/8/8/4K2k b - - 0 1", None)]
+    timeline = {"status_lines": [], "answer_start_seconds": 1.0, "total_seconds": 2.0}
+    save_cached_answer(conn, "Q?", "The answer.", fens, recs, timeline)
+    save_cached_answer(conn, "Q?", "A newer answer.", fens, recs, timeline)  # replaces it
+
+    assert load_cached_answers(conn) == {
+        "Q?": CachedAnswer("A newer answer.", fens, recs, timeline)
+    }

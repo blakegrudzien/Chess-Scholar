@@ -68,6 +68,22 @@ CREATE TABLE IF NOT EXISTS conversation_log (
     answer TEXT NOT NULL
 );
 
+-- Saved answers for the app's example questions, so a demo click is instant
+-- and free. Written by scripts/generate_example_answers.py. Kept here rather
+-- than in the repo, since an answer can paraphrase licensed annotations.
+CREATE TABLE IF NOT EXISTS example_answers (
+    question TEXT PRIMARY KEY,
+    answer TEXT NOT NULL,
+    touched_fens JSONB NOT NULL,
+    recommendations JSONB NOT NULL,
+    -- When each status line appeared, when the answer began streaming and
+    -- the total time, so a saved answer can be replayed at a live pace.
+    timeline JSONB,
+    generated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- For tables created before the timeline column existed.
+ALTER TABLE example_answers ADD COLUMN IF NOT EXISTS timeline JSONB;
+
 -- Indexes for Layer 1 structured search
 CREATE INDEX IF NOT EXISTS idx_games_eco ON games(eco_code);
 CREATE INDEX IF NOT EXISTS idx_games_year ON games(year);

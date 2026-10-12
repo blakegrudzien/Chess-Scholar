@@ -32,6 +32,8 @@ def _fake_ask_agent(question, on_position=None, **kwargs):
 
 
 chat.ask_agent = _fake_ask_agent
+# Example questions go to the fake agent too, not to saved answers.
+chat.cached_example_answer = lambda question, **kwargs: None
 chat.recommend_resources = _slow_empty_lookup
 chat.log_conversation_best_effort = lambda *args, **kwargs: None
 for getter in (

@@ -115,6 +115,9 @@ corpus, annotated PGN export) is still open, and PGN upload needs more work.
 - `streamlit run src/app.py` — run the app
 - `psql "$DATABASE_URL" -f scripts/init_db.sql` — init schema
 - `ruff check --fix . && ruff format .` — lint/format
+- `python -m scripts.generate_example_answers` — refresh the saved answers for the
+  four example questions (example_answers table); rerun after changing the
+  system prompt, tools or corpus, since they don't update on their own
 - `pytest -v tests` — run tests. Two things self-skip with a clear reason rather
   than failing when their dependency isn't set up locally: the draggable-board
   test needs Playwright/Chromium (see below), and several DB-backed tests

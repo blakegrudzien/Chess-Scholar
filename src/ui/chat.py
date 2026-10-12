@@ -9,6 +9,7 @@ live in board_panel.py.
 
 from __future__ import annotations
 
+import functools
 import html
 import io
 import itertools
@@ -37,6 +38,12 @@ from src.recommendation.pipeline import (
 )
 from src.ui.board_panel import render_board_panel
 from src.ui.conversation_log import log_conversation_best_effort
+from src.ui.example_answers import (
+    EXAMPLE_QUESTIONS,
+    CachedAnswer,
+    cached_example_answer,
+    replay_cached_answer,
+)
 from src.ui.help_text import FEN_HELP
 from src.ui.input_limits import (
     MAX_QUESTION_CHARS,
@@ -108,7 +115,10 @@ def ask_agent(
 
 
 def ask_with_status(
-    question: str, *, history: list[dict[str, str]] | None = None
+    question: str,
+    *,
+    history: list[dict[str, str]] | None = None,
+    ask_fn: Callable[..., str] | None = None,
 ) -> tuple[str, list[tuple[str, str | None]]]:
     """Answer `question` with live feedback: a progress bar, a status line
     per tool call, and the answer streaming in. Renders the finished answer
@@ -117,6 +127,10 @@ def ask_with_status(
     Returns (answer, touched_fens): the (fen, label) pairs tools reported, in
     order, for chat_history to replay later. label is None except for
     show_opening_line diagrams.
+
+    ask_fn produces the answer through the same callbacks as ask_agent (the
+    default, looked up at call time); a saved example answer passes its
+    replay here.
 
     The Stop button needs no handler: any click cancels the running script.
     """
@@ -181,8 +195,10 @@ def ask_with_status(
         if not touched_fens or touched_fens[-1][0] != fen:
             touched_fens.append((fen, label))
 
+    if ask_fn is None:
+        ask_fn = ask_agent
     try:
-        answer = ask_agent(
+        answer = ask_fn(
             question, on_step=on_step, on_chunk=on_chunk, on_position=on_position, history=history
         )
     except anthropic.APIError:
@@ -544,21 +560,9 @@ def _build_message_history() -> list[dict[str, str]]:
     ]
 
 
-def _submit_question(question: str, *, fen_context: str | None = None) -> bool:
-    """Ask the agent and add the exchange to the transcript. Every question
-    goes through here: typed, example prompts, Evaluate and the board's own
-    question box.
-
-    Called from the chat column only, since the live answer UI renders
-    wherever this runs; board-side buttons set
-    st.session_state.pending_question and rerun instead.
-
-    fen_context, if given, is sent to the model with the question and shown
-    under it in the transcript.
-
-    Returns False when the rate limit rejected the question. The caller must
-    not rerun then, or the warning would vanish before anyone read it.
-    """
+def _within_rate_limits() -> bool:
+    """Count one question against the per-session and shared limits, or
+    show a warning and return False if either is used up."""
     now = time.monotonic()
     request_times = st.session_state.setdefault("request_times", [])
     request_times[:] = [t for t in request_times if now - t < REQUEST_WINDOW_SECONDS]
@@ -571,6 +575,38 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> bool:
         st.warning("This demo has reached its question limit for today. Please try again tomorrow.")
         return False
     request_times.append(now)
+    return True
+
+
+def _replay_without_history(
+    cached: CachedAnswer, question: str, *, history=None, **callbacks
+) -> str:
+    """ask_fn for a saved example answer: replays it, ignoring the question
+    and history it is called with."""
+    return replay_cached_answer(cached, **callbacks)
+
+
+def _submit_question(question: str, *, fen_context: str | None = None) -> bool:
+    """Ask the agent and add the exchange to the transcript. Every question
+    goes through here: typed, example prompts, Evaluate and the board's own
+    question box.
+
+    Called from the chat column only, since the live answer UI renders
+    wherever this runs; board-side buttons set
+    st.session_state.pending_question and rerun instead.
+
+    fen_context, if given, is sent to the model with the question and shown
+    under it in the transcript.
+
+    An example question with a saved answer (see example_answers.py) is
+    answered from it, without calling the API or counting toward the limits.
+
+    Returns False when the rate limit rejected the question. The caller must
+    not rerun then, or the warning would vanish before anyone read it.
+    """
+    cached = cached_example_answer(question, fen_context=fen_context)
+    if cached is None and not _within_rate_limits():
+        return False
     # The previous answer's lookup no longer applies; its results are dropped.
     st.session_state.resource_lookup = None
 
@@ -582,9 +618,18 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> bool:
             st.caption(f"Position: `{fen_context}`", help=FEN_HELP)
     sent_question = _to_model_text(question, fen_context)
     with st.chat_message("assistant", avatar=_CHAT_AVATARS["assistant"]):
-        answer, touched_fens = ask_with_status(sent_question, history=history)
+        if cached is not None:
+            replay = functools.partial(_replay_without_history, cached)
+            answer, touched_fens = ask_with_status(sent_question, history=history, ask_fn=replay)
+        else:
+            answer, touched_fens = ask_with_status(sent_question, history=history)
     st.session_state.chat_history.append(("assistant", answer, None, touched_fens))
-    _start_resource_lookup()
+    if cached is not None:
+        ready: Future[list[Recommendation]] = Future()
+        ready.set_result(cached.recommendations)
+        st.session_state.resource_lookup = _ResourceLookup(ready)
+    else:
+        _start_resource_lookup()
 
     log_conversation_best_effort(get_db_pool(), question, fen_context, answer)
     return True
@@ -595,13 +640,7 @@ def _render_example_prompts(*, disabled: bool = False) -> None:
     four together show the routing. A click stashes the question as pending
     and reruns, the same path as a typed question."""
     st.caption("Try asking:")
-    examples = [
-        "How should White meet the Sicilian Defense?",  # Layers 1 + 2: stats and plans
-        "Evaluate 1. e4 e5 2. Qh5 for White",  # Layer 3: engine
-        "What's the plan behind an isolated queen pawn?",  # Layer 2: concepts
-        "Where does White's knight usually end up in the Najdorf?",  # Layer 1: statistics
-    ]
-    for i, example in enumerate(examples):
+    for i, example in enumerate(EXAMPLE_QUESTIONS):
         if st.button(example, key=f"example_prompt_{i}", width="stretch", disabled=disabled):
             st.session_state.pending_question = (example, None)
             st.rerun()
