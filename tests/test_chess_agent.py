@@ -9,6 +9,7 @@ import pytest
 from src.agent.chess_agent import (
     MAX_CANDIDATE_MOVES,
     MAX_SEARCH_LIMIT,
+    PLURAL_TOOL_LABELS,
     TOOL_LABELS,
     ask,
     build_tools,
@@ -703,6 +704,34 @@ def test_ask_joins_fallback_labels_for_multiple_tools_with_no_rationale():
     ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_step=steps.append)
 
     assert steps == [f"{TOOL_LABELS['get_eco_summary']} / {TOOL_LABELS['search_annotations']}"]
+
+
+def test_fallback_status_names_a_repeated_tool_once_in_plural():
+    tool_turn = _stream_turn(
+        [
+            _tool_use_block("get_eco_summary"),
+            _tool_use_block("get_eco_summary"),
+            _tool_use_block("show_opening_line"),
+            _tool_use_block("show_opening_line"),
+            _tool_use_block("show_opening_line"),
+        ]
+    )
+    final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
+
+    client = MagicMock()
+    client.beta.messages.tool_runner.return_value = [tool_turn, final_turn]
+
+    steps = []
+    ask("q", MagicMock(), MagicMock(), MagicMock(), client=client, on_step=steps.append)
+
+    # get_eco_summary has no plural form, so its label is kept as is.
+    assert steps == [
+        f"{TOOL_LABELS['get_eco_summary']} / {PLURAL_TOOL_LABELS['show_opening_line']}"
+    ]
+
+
+def test_every_plural_label_belongs_to_a_known_tool():
+    assert set(PLURAL_TOOL_LABELS) <= set(TOOL_LABELS)
 
 
 def test_ask_does_not_call_on_step_for_a_text_only_turn():

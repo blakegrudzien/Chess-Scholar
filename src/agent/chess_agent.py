@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol
@@ -133,6 +134,13 @@ TOOL_LABELS: dict[str, str] = {
     "compare_candidate_moves": "Layer 3 (Stockfish): comparing candidate moves.",
     "find_similar_corpus_games": "Layer 4 (similarity search): comparing against the corpus.",
     "show_opening_line": "Rendering a position diagram.",
+}
+
+# Wording for a tool called more than once in the same turn, where the
+# singular label would read wrong. Tools not listed use their label as is.
+PLURAL_TOOL_LABELS: dict[str, str] = {
+    "evaluate_chess_position": "Layer 3 (Stockfish): evaluating positions.",
+    "show_opening_line": "Rendering position diagrams.",
 }
 
 
@@ -423,8 +431,21 @@ def _report_tool_steps(message, on_step: Callable[[str], None]) -> None:
             rationale[:200],
         )
     if not rationale:
-        rationale = " / ".join(TOOL_LABELS.get(name, f"Calling {name}...") for name in tool_names)
+        rationale = _fallback_status(tool_names)
     on_step(rationale)
+
+
+def _fallback_status(tool_names: list[str]) -> str:
+    """One label per distinct tool, in first-call order, so a turn that
+    calls the same tool three times reads as one step rather than three."""
+    counts = Counter(tool_names)
+    labels = []
+    for name in counts:  # Counter keeps first-seen order
+        label = TOOL_LABELS.get(name, f"Calling {name}...")
+        if counts[name] > 1:
+            label = PLURAL_TOOL_LABELS.get(name, label)
+        labels.append(label)
+    return " / ".join(labels)
 
 
 def _report_position_update(message, on_position: OnPosition) -> None:
