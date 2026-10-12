@@ -1,13 +1,9 @@
-"""Thin wrapper over Lichess's real, documented Studies API, for the study
-recommendation feature (Layer 2's sibling: point at good external resources
-instead of ingesting and serving their text).
+"""A small client for Lichess's documented Studies API, used by the study
+recommendations.
 
-Deliberately narrow: this only fetches a study's content by id and lists a
-known user's studies. It does not attempt to search Lichess by topic --
-verified against the actual OpenAPI spec, not assumed, no such endpoint
-exists. Topic-based discovery happens later, over our own indexed copy of a
-curated set of studies (collected once via this client, scored, embedded,
-and cached), not by querying Lichess live per question.
+It fetches a study by id and lists a user's studies. The API has no topic
+search, so topic matching runs over this project's own indexed copy of
+selected studies.
 """
 
 from __future__ import annotations
@@ -25,48 +21,25 @@ logger = logging.getLogger(__name__)
 
 LICHESS_BASE_URL = "https://lichess.org"
 
-# Every request this project sends to Lichess -- the documented API
-# (LichessClient) and the HTML scraper (lichess_scraper.py) alike -- goes
-# out through a client built by default_http_client, specifically so it
-# always identifies itself. httpx's own default User-Agent
-# ("python-httpx/<version>") says nothing about who's making the request
-# or how to reach them, which is poor etiquette against a real third-party
-# service, more so for lichess_scraper.py's undocumented HTML endpoints
-# than the documented API. The URL is this project's real public repo, not
-# a placeholder.
+# Every request to Lichess (API and scraper) identifies the project and how
+# to reach it, instead of httpx's anonymous default User-Agent.
 USER_AGENT = "chess-scholar/0.1.0 (+https://github.com/blakegrudzien/Chess-Scholar)"
 
-# Lichess documents no fixed request-per-minute limit, just "one request at
-# a time" and a minute-long backoff on 429 -- these constants encode that
-# guidance directly rather than guessing at a number of our own.
+# Lichess asks for one request at a time and a one-minute wait after a 429.
 REQUEST_PACING_SECONDS = 1.0
 RATE_LIMIT_BACKOFF_SECONDS = 60
 MAX_RATE_LIMIT_RETRIES = 3
 
 
 def default_http_client() -> httpx.Client:
-    """The one place an httpx.Client talking to Lichess gets constructed
-    from scratch -- shared by LichessClient and both lichess_scraper.py
-    functions' own http_client defaults, so USER_AGENT (and base_url/
-    timeout) can't drift out of sync between the three call sites that
-    used to each spell out httpx.Client(base_url=LICHESS_BASE_URL,
-    timeout=30.0) independently, and any of them missing the header by
-    a future copy-paste omission.
-    """
+    """The httpx.Client every Lichess request uses, so the User-Agent, base
+    URL and timeout are set in one place."""
     return httpx.Client(base_url=LICHESS_BASE_URL, timeout=30.0, headers={"User-Agent": USER_AGENT})
 
 
 class RequestPacer:
-    """Enforces REQUEST_PACING_SECONDS between consecutive requests to
-    lichess.org, regardless of which caller issues them.
-
-    Pulled out of LichessClient so lichess_scraper.py (a separate module by
-    design -- see its docstring) can share the exact same courtesy behavior
-    against the same host without duplicating the algorithm. Composition
-    over inheritance: the scraper and the API client have no "is-a"
-    relationship, they just both need this one piece of behavior, so each
-    holds an instance rather than sharing a base class built for it.
-    """
+    """Keeps REQUEST_PACING_SECONDS between requests to lichess.org, whoever
+    makes them. Shared by the API client and the scraper."""
 
     def __init__(self) -> None:
         self._last_request_at: float | None = None
@@ -133,26 +106,17 @@ class LichessClient:
                 continue
             response.raise_for_status()
             return response.text
-        # Every iteration above returns or raises (the last attempt's 429
-        # branch always raises instead of looping again), so this is
-        # unreachable -- stated explicitly for the same reason as the
-        # equivalent marker in db_loader.query_with_retry: it tells a type checker,
-        # and a future reader who changes MAX_RATE_LIMIT_RETRIES, that
-        # falling out of the loop is a bug, not a valid path.
+        # Unreachable: every attempt returns or raises. Stated so a type
+        # checker doesn't see an implicit None return.
         raise AssertionError("unreachable: every fetch_study_pgn attempt returns or raises")
 
     def iter_studies_by_username(self, username: str, limit: int | None = None) -> Iterator[dict]:
         """Yield {id, name, createdAt, updatedAt} for a user's public
         studies, most recently updated first.
 
-        This is a streaming newline-delimited-JSON endpoint (confirmed via
-        a live request, not assumed from the docs), and in practice it can
-        be slow and return a very large number of results for an active
-        account -- a request against Lichess's own official account timed
-        out after 15 seconds having already streamed dozens of studies with
-        no end in sight. Reading it line by line, and supporting a limit,
-        means a caller asking for "the first handful" isn't forced to wait
-        for or buffer someone's entire study history first.
+        The endpoint streams newline-delimited JSON and can be slow and huge
+        for an active account, so it's read line by line and `limit` stops
+        early.
         """
         self._pacer.wait()
         count = 0
@@ -168,29 +132,18 @@ class LichessClient:
 
 
 def game_embed_url(game_id: str, *, theme: str = "auto", bg: str = "auto") -> str:
-    """Build a read-only, embeddable URL for a single game -- Lichess's own
-    "Embed in your website" feature, confirmed format.
-    """
+    """A read-only embed URL for one game (Lichess's "Embed in your
+    website" format)."""
     return f"{LICHESS_BASE_URL}/embed/{quote(game_id, safe='')}?theme={theme}&bg={bg}"
 
 
 def study_chapter_embed_url(study_id: str, chapter_id: str, *, bg: str = "dark") -> str:
-    """Build a read-only, embeddable URL for one chapter of a study.
+    """A read-only embed URL for one study chapter. The chapter is required:
+    Lichess's embed format has no whole-study form.
 
-    chapter_id is required, not optional: Lichess's study embed format is
-    /study/embed/{studyId}/{chapterId} -- there's no confirmed "whole
-    study, pick a default chapter" form, so this doesn't pretend one exists
-    by defaulting chapter_id to something unverified. Whatever calls this
-    is responsible for having already picked a chapter.
-
-    bg defaults to "dark", not Lichess's own "auto": auto sets
-    data-theme="system" on the embedded page, meaning it follows
-    whichever viewer's own OS light/dark preference, not this app's own
-    walnut/parchment identity. Most viewers are on light mode by default,
-    which renders Lichess's stark white theme directly against a dark
-    wood-toned app background. A fixed dark theme looks consistent for
-    every viewer regardless of their own system setting, matching the
-    deliberate single-theme choice made for the rest of the app's design.
+    bg defaults to "dark" rather than Lichess's "auto", which follows the
+    viewer's system theme and shows a bright white board on most screens,
+    out of place in this app's wood-toned design.
     """
     return (
         f"{LICHESS_BASE_URL}/study/embed/"

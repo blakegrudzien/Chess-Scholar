@@ -1,20 +1,15 @@
 """Streamlit review tool for hand-labeling the study candidates collected by
 collect_study_candidates.py.
 
-Reads data/processed/study_candidates.jsonl, shows one not-yet-labeled study
-at a time with a readable preview of its annotations, and appends each
-decision as one JSON line to data/processed/study_labels.jsonl. The two
-files are kept separate on purpose: candidates are re-collectible network
-data, labels are irreplaceable human judgment, and a rerun of the collector
-should never risk the labeling work already done.
+Shows one unlabeled study at a time from data/processed/study_candidates.jsonl,
+with a preview of its annotations, and appends each decision to
+data/processed/study_labels.jsonl. Labels live in their own file so
+recollecting candidates can never touch them.
 
-Labeling resumes correctly across restarts because "the next study to show"
-is always recomputed as "first candidate whose study_id isn't already in the
-labels file" -- there's no separate progress counter that could drift out of
-sync with what's actually been recorded.
+The next study is always the first one not yet in the labels file, so
+labeling resumes where it left off after a restart.
 
-Run as a module so the repo root lands on sys.path (same reason
-collect_study_candidates.py does):
+Run from the repo root:
     .venv/bin/streamlit run scripts/label_studies_app.py
 """
 
@@ -36,26 +31,18 @@ CANDIDATES_PATH = Path("data/processed/study_candidates.jsonl")
 LABELS_PATH = Path("data/processed/study_labels.jsonl")
 
 GENRE_OPTIONS = ["drill", "concept", "narrative"]
-# Captured alongside genre, not as a genre of its own: the 3-way
-# drill/concept/narrative split stays the user-facing recommendation
-# taxonomy (unchanged), but within it an opening repertoire and an endgame
-# study can have very different structural shapes (chapter count, comment
-# length) despite both being "concept." Without this, the quality
-# classifier (Step 5) has no way to tell "terse because it's an endgame
-# study" from "terse because it's low effort" -- it only sees the 11
-# structural numbers in feature_extraction.py, nothing chess-semantic, so
-# it can only learn whatever correlation actually shows up in the labels.
+# Recorded alongside genre: an opening repertoire and an endgame study can
+# look structurally different though both are "concept" studies, and the
+# classifier only sees structural numbers, so it can't otherwise tell
+# "terse because it's an endgame study" from "terse because it's thin".
 PHASE_OPTIONS = ["opening", "middlegame", "endgame", "general"]
 QUALITY_OPTIONS = ["recommend", "reject"]
 
 
 @st.cache_data
 def _load_candidates(path: str, mtime: float) -> list[dict]:
-    """mtime is part of the cache key purely so this reloads automatically
-    if collect_study_candidates.py writes more rows after the app has
-    already cached a shorter version of the file -- Streamlit's cache
-    otherwise has no way to know the file on disk changed underneath it.
-    """
+    """mtime is in the cache key so the app reloads when the collector adds
+    rows to the file."""
     records = []
     with open(path, encoding="utf-8") as f:
         for line in f:

@@ -1,16 +1,11 @@
-"""Build the searchable pool of recommendable Lichess studies: score every
-collected candidate with the trained quality classifier, keep the ones
-eligible for recommendation (study_index.is_eligible_for_recommendation --
-both quality and a likes floor), embed their content via Voyage, and sync
-the result into lichess_study_cache on Neon.
+"""Build the searchable pool of Lichess studies: score every collected
+candidate with the quality classifier, keep the eligible ones (quality and
+a likes floor, see study_index.is_eligible_for_recommendation), embed them
+with Voyage, and sync them into lichess_study_cache.
 
-A full sync, not an append: candidates that no longer clear eligibility
-(e.g. after retraining the classifier on more labels) are deleted from the
-cache, not left stale, and existing rows are upserted rather than
-duplicated. Safe to re-run any time the candidate pool, labels, or trained
-model change -- there's no notion of "already processed" to get out of
-sync with, unlike voyage_embedder.py's chunks backfill (which only ever
-adds rows and never revisits one once embedded).
+A full sync: studies that are no longer eligible (after retraining, say)
+are deleted and the rest upserted, so it's safe to rerun whenever the
+candidates, labels or model change.
 
 Run as a module from the repo root:
     .venv/bin/python -m scripts.build_study_index
@@ -49,24 +44,16 @@ def _load_candidates() -> list[dict]:
 
 
 def _check_feature_order_matches_training(metadata_path: Path = MODEL_METADATA_PATH) -> None:
-    """The fitted ColumnTransformer inside the saved pipeline bakes in
-    feature *positions*, not names -- ColumnTransformer.transform has no
-    way to know FEATURE_NAMES has changed since fit time, so a future
-    reorder (or insertion/removal) of a feature would silently score every
-    candidate against the wrong columns instead of raising. Comparing
-    against feature_names in the model's own metadata (written by
-    scripts/train_quality_classifier.py alongside the .joblib) catches
-    that mismatch loudly, before it can corrupt a whole index build,
-    rather than not at all.
-
-    Missing metadata (a model file present without its sidecar -- an old
-    commit predating this check, or a hand-copied .joblib) is treated the
-    same as a mismatch: there's nothing to verify consistency against, so
-    trusting the model blindly isn't safe either.
+    """Fail if FEATURE_NAMES differs from the order the model was trained
+    on. The saved pipeline works by column position, so a reordered or
+    added feature would score every study against the wrong columns
+    without any error. The trained order is in the model's metadata file
+    (written by scripts/train_quality_classifier.py); a missing metadata
+    file fails too, since nothing can be checked.
     """
     if not metadata_path.exists():
         raise RuntimeError(
-            f"{metadata_path} is missing -- can't verify {MODEL_PATH} was trained against "
+            f"{metadata_path} is missing, so can't verify {MODEL_PATH} was trained against "
             "the current FEATURE_NAMES order. Retrain via scripts.train_quality_classifier "
             "(it writes this file alongside the model), or restore the metadata file."
         )
@@ -75,7 +62,7 @@ def _check_feature_order_matches_training(metadata_path: Path = MODEL_METADATA_P
     if trained_feature_names != FEATURE_NAMES:
         raise RuntimeError(
             f"FEATURE_NAMES has changed since {MODEL_PATH} was trained "
-            f"(trained on {trained_feature_names}, current is {FEATURE_NAMES}) -- "
+            f"(trained on {trained_feature_names}, current is {FEATURE_NAMES}); "
             "scoring candidates against it now would silently use the wrong "
             "columns. Retrain via scripts.train_quality_classifier first."
         )
@@ -83,10 +70,7 @@ def _check_feature_order_matches_training(metadata_path: Path = MODEL_METADATA_P
 
 def _select_eligible(candidates: list[dict]) -> list[tuple[dict, float]]:
     if not MODEL_PATH.exists():
-        # label_studies_app.py, one script over in this same pipeline,
-        # already gives this exact courtesy for its own missing-input
-        # case (CANDIDATES_PATH) -- a bare FileNotFoundError from
-        # joblib.load with no guidance was the gap here specifically.
+        # A clear message instead of joblib's bare FileNotFoundError.
         raise RuntimeError(
             f"{MODEL_PATH} not found. Run `python -m scripts.train_quality_classifier` first."
         )

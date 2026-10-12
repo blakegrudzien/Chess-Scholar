@@ -1,9 +1,8 @@
-"""Layer 2 embeddings -- Voyage AI, Anthropic's recommended embeddings partner
-(Anthropic has no first-party embedding model).
+"""Layer 2 embeddings with Voyage AI (Anthropic's recommended embeddings
+partner; Anthropic has no embedding model of its own).
 
-Only embeds chunks where chunks.embedding IS NULL, so re-running after a
-partial run or a fresh ingestion batch never re-pays for already-embedded
-rows -- the same idempotency principle as db_loader's ON CONFLICT inserts.
+Only chunks with no embedding yet are embedded, so a rerun never pays twice
+for the same rows.
 """
 
 from __future__ import annotations
@@ -81,18 +80,12 @@ def embed_pending_chunks(
     """Embed every chunk with a NULL embedding, batching up to BATCH_SIZE
     texts per Voyage API call. Returns the number of chunks embedded.
 
-    Holds one connection across the whole job (reconnecting per batch was
-    tried and made every batch ~3x slower -- Neon's per-connection setup
-    cost dominates). On a dropped connection (observed in practice: Neon
-    closed a long-lived idle connection mid-job, raised as either
-    OperationalError or InterfaceError depending on which the client
-    detected it), reconnect and retry. On a transient Voyage API error
-    (observed in practice: a 10-minute read timeout), back off briefly and
-    retry without touching the DB connection.
-    Either way the failed batch was never committed, so it's safe to just
-    loop again. Gives up after `max_consecutive_failures` in a row so a
-    truly broken connection or API outage fails loudly instead of spinning
-    forever.
+    Holds one connection for the whole job, since Neon's connection setup
+    made per-batch reconnects about 3x slower. A dropped connection
+    (OperationalError or InterfaceError) is reopened and the batch retried;
+    a transient Voyage error is retried after a short wait. A failed batch
+    was never committed, so retrying is safe. Gives up after
+    `max_consecutive_failures` failures in a row.
     """
     total_embedded = 0
     consecutive_failures = 0

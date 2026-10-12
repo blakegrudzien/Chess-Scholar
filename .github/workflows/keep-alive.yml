@@ -2,16 +2,9 @@ name: Keep Streamlit app awake
 
 on:
   schedule:
-    # Every 8 hours. Streamlit Community Cloud puts idle apps to sleep after
-    # a period of no traffic; this is a resume-linked demo, so it needs to
-    # stay warm for someone clicking in cold.
-    #
-    # Not daily: the app was observed asleep roughly 27 hours after its last
-    # real visit, so a 24-hour interval sits right on the edge of the sleep
-    # window with no margin. GitHub also runs scheduled workflows late under
-    # load, and a run that slips past the window is a run that arrives after
-    # the app has already gone under. Three runs a day is free and removes
-    # the boundary rather than betting on where exactly it falls.
+    # Every 8 hours: Streamlit Community Cloud puts idle apps to sleep (one
+    # was asleep about 27 hours after its last visit), and scheduled runs
+    # often start late, so daily would be cutting it close.
     - cron: "0 */8 * * *"
   workflow_dispatch: {}
 
@@ -32,9 +25,6 @@ jobs:
           playwright install --with-deps chromium
 
       - name: Visit the app with a real browser
-        # Not curl: confirmed live that a curl ping "succeeding" daily for
-        # days straight did not stop the app from going to sleep -- curl
-        # never establishes the real page-load + WebSocket session
-        # Streamlit Cloud actually tracks as a visit. See the script's own
-        # docstring for the full story.
+        # A real browser: only a full page load with the WebSocket session
+        # counts as a visit (see the script's docstring).
         run: python scripts/keep_streamlit_awake.py

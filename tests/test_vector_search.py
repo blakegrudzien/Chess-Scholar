@@ -59,3 +59,17 @@ def test_search_chunks_returns_empty_list_when_no_matches():
         results = search_chunks(conn, client, "nonexistent concept")
 
     assert results == []
+
+
+def test_vector_type_is_registered_once_per_connection():
+    """register_vector queries the database, so a connection reused from the
+    pool registers once, not on every search."""
+    from src.rag.vector_search import ensure_vector_type
+
+    first, second = MagicMock(), MagicMock()
+    with patch("src.rag.vector_search.register_vector") as mock_register:
+        ensure_vector_type(first)
+        ensure_vector_type(first)
+        ensure_vector_type(second)
+
+    assert [call.args[0] for call in mock_register.call_args_list] == [first, second]

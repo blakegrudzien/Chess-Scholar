@@ -1,22 +1,14 @@
 """Turn one collected study candidate into a fixed-size numeric feature
 vector for the quality classifier.
 
-Deliberately structural/text-statistics features only, computed from a
-study's own PGN content and scraped listing metadata -- not embeddings, and
-nothing derived from any particular user question. Semantic relevance to a
-question is a separate, later stage of the recommendation cascade
-(embedding similarity over the chunks table, computed at query time), so it
-has no business here: a study gets a quality score once, independent of
-what anyone eventually asks.
+Only structural and text-statistics features from the study's PGN and
+listing data: a study's quality is scored once, independent of any
+question, while relevance to a question is judged later by embedding
+similarity.
 
-Kept as a handful of plain, interpretable numbers rather than a learned
-text representation (TF-IDF, an embedding) because the labeled training set
-is small -- on the order of a hundred examples, hand-labeled by one person.
-A high-dimensional representation fed to a classical model that size would
-mostly memorize noise; a small, well-chosen feature set is the amount of
-model capacity that much data can actually support. This is the standard
-bias-variance argument for classical ML: capacity should track the size of
-the available data, not the size one might eventually want.
+A handful of interpretable numbers rather than TF-IDF or embeddings,
+because a couple of hundred hand-labeled examples can't support a
+high-dimensional model without it memorizing noise.
 """
 
 from __future__ import annotations
@@ -29,10 +21,8 @@ from src.recommendation.study_pgn import iter_study_chapters
 
 _WORD_RE = re.compile(r"\S+")
 
-# Order here is the model's contract with the rest of the pipeline --
-# training and inference must agree on which column is which, so this list
-# is the one place that order is defined. StudyFeatures.as_vector() and
-# anything that builds a training matrix both derive from it.
+# The column order training and inference share; everything that builds a
+# feature vector follows this list.
 FEATURE_NAMES = [
     "num_chapters",
     "total_plies",
@@ -64,10 +54,7 @@ class StudyFeatures:
     title_length: int
 
     def as_vector(self) -> list[float]:
-        """Feature values in FEATURE_NAMES order, as plain floats -- the
-        shape a classical ML model (e.g. scikit-learn's LogisticRegression)
-        expects for X.
-        """
+        """Feature values as floats, in FEATURE_NAMES order."""
         return [
             float(self.num_chapters),
             float(self.total_plies),

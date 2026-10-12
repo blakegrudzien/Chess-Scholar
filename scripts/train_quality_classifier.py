@@ -1,16 +1,13 @@
 """Train and evaluate the study quality classifier.
 
-Compares two candidate models via 5-fold cross-validation on the labeled
-dataset (drill/concept genres only -- see quality_classifier.py's module
-docstring for why narrative is excluded), reports overall and per-genre/
-per-phase metrics for each, picks the higher cross-validated ROC-AUC,
-refits the winner on the full labeled set, and saves it.
+Compares two models with 5-fold cross-validation on the labeled data
+(drill and concept genres only, see quality_classifier.py), reports overall
+and per-genre and per-phase metrics, picks the higher ROC-AUC, refits the
+winner on all the data and saves it.
 
-ROC-AUC (ranking quality, independent of any specific decision threshold)
-is the selection criterion because this classifier's output feeds a later
-cascade stage that ranks/filters candidates by predicted quality -- what
-matters is whether it orders good studies above bad ones, not whether a
-threshold of exactly 0.5 happens to split them well.
+ROC-AUC because the scores are used to rank and filter studies: what
+matters is ordering good studies above bad ones, not where one threshold
+falls.
 
 Run as a module from the repo root:
     .venv/bin/python -m scripts.train_quality_classifier
@@ -44,30 +41,19 @@ logger = logging.getLogger(__name__)
 CANDIDATES_PATH = Path("data/processed/study_candidates.jsonl")
 LABELS_PATH = Path("data/processed/study_labels.jsonl")
 MODEL_OUTPUT_PATH = Path("models/quality_classifier.joblib")
-# A sibling JSON file, not a docstring or commit message, so a reader (or
-# build_study_index.py itself, see its own check) can get this
-# programmatically instead of digging through git log -- what the
-# committed .joblib actually is: when it was trained, on how many
-# examples, which model won and at what cross-validated ROC-AUC, and the
-# exact FEATURE_NAMES order it was fit against. That last field is what
-# lets build_study_index.py catch a future FEATURE_NAMES reorder before it
-# silently corrupts every prediction, instead of after.
+# Metadata saved next to the model: when it was trained, on how many
+# examples, which model won at what ROC-AUC, and the FEATURE_NAMES order it
+# was fit on, which build_study_index.py checks before scoring.
 MODEL_METADATA_PATH = Path("models/quality_classifier.meta.json")
 RANDOM_STATE = 0
 
 
 def _build_candidate_models() -> dict[str, ClassifierMixin]:
-    """Two different tuning strategies, deliberately: LogisticRegressionCV
-    tunes its own regularization strength via an efficient internal CV
-    search, which scikit-learn supports natively for linear models. There's
-    no equivalent built-in for gradient boosting, and hand-rolling a nested
-    CV grid search over HistGradientBoostingClassifier's hyperparameters on
-    only ~140 examples risks overfitting the *search* to the CV folds
-    themselves -- more tuning knobs turned on this little data is a bigger
-    risk than a slightly worse fixed configuration. So its hyperparameters
-    are fixed instead, deliberately conservative (shallow trees, few
-    iterations, real L2) to match how little data it has to avoid
-    memorizing.
+    """The two candidates. LogisticRegressionCV tunes its own regularization
+    by internal cross-validation. Gradient boosting has no such built-in,
+    and searching its hyperparameters on ~140 examples would overfit the
+    search itself, so it uses fixed, conservative settings (shallow trees,
+    few iterations, L2).
     """
     return {
         "logistic_regression": LogisticRegressionCV(
@@ -75,14 +61,7 @@ def _build_candidate_models() -> dict[str, ClassifierMixin]:
             class_weight="balanced",
             max_iter=1000,
             random_state=RANDOM_STATE,
-            # roc_auc, not accuracy: this module's own docstring picks
-            # ROC-AUC over the outer two candidate models specifically
-            # because ranking quality, independent of any one threshold,
-            # is what the downstream cascade needs -- the same reasoning
-            # applies one level down to how this model's own regularization
-            # strength gets tuned. Scoring the inner search by accuracy
-            # while scoring the outer choice by ROC-AUC was a real mismatch
-            # between what's stated and what's implemented.
+            # Tuned on ROC-AUC, the same measure the model choice uses.
             scoring="roc_auc",
             l1_ratios=[0.0],
             use_legacy_attributes=False,

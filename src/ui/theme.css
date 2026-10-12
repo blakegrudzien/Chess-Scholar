@@ -6,32 +6,23 @@
     border-radius: 2px;
 }
 
-/* Primary buttons (Evaluate this position, Find related resources) render
-   with the theme's own primaryColor but flat -- no depth, unlike every
-   other surface this app treats as "carved" (chat input above, code
-   blocks, the user chat bubble). stBaseButton-primary is a real Streamlit
-   testid, not a generated Emotion hash. */
+/* Primary buttons get the same inset depth as the app's other "carved"
+   surfaces (chat input, code blocks, the user bubble). */
 button[data-testid="stBaseButton-primary"] {
     box-shadow:
         inset 0 2px 3px rgba(0, 0, 0, 0.35),
         inset 0 -1px 0 rgba(237, 225, 204, 0.2);
 }
 
-/* Reset board / Undo last move are plain (kind="secondary") buttons --
-   light surfaces, so this reuses the same lighter inset values as the
-   chat input / assistant bubble rather than the darker ones tuned for
-   primaryColor's oxblood. */
+/* Secondary buttons: the lighter inset used on light surfaces. */
 button[data-testid="stBaseButton-secondary"] {
     box-shadow:
         inset 0 2px 3px rgba(43, 31, 23, 0.30),
         inset 0 -1px 0 rgba(237, 225, 204, 0.35);
 }
 
-/* The "Ask about this position..." text input and its "Ask" submit
-   button (a form, not a plain button -- Streamlit gives form-submit
-   buttons their own kind, "secondaryFormSubmit", distinct from a plain
-   button's "secondary") are the two remaining flat surfaces next to the
-   now-inset chat input above; same treatment for visual consistency. */
+/* The position question box and its Ask button (a form submit button, a
+   separate button kind) match the chat input's inset. */
 div[data-testid="stTextInputRootElement"] {
     background: #DACBA8;
     box-shadow:
@@ -82,45 +73,14 @@ button[data-testid="stBaseButton-secondaryFormSubmit"] {
     line-height: 1.55;
 }
 
-/* The scrollable message panel (render_main_screen's st.container(height=
-   MESSAGE_PANEL_HEIGHT_PX, border=True), "the chatbox") is the one layout
-   wrapper that gets its own distinct surface -- unlike the "Ask about
-   this position" form or other plain grouping containers, where the
-   individual block elements inside (the text input, the button) already
-   carry their own inset treatment and the wrapper is just spacing
-   between them, left showing the page's own background on purpose. The
-   chatbox holds the whole conversation, not just a couple of controls,
-   so it reads as its own sunken panel -- same card tone .rec-card uses,
-   plus the same inset depth language every other carved surface in the
-   app has.
+/* The chat panel is the one layout container with its own sunken
+   surface, since it holds the whole conversation. Selected by its key
+   class; height-based selectors also matched the board column.
 
-   Selected by .st-key-chat_panel, the class Streamlit derives from the
-   container's key= (see render_main_screen). Height-based selectors were
-   tried first and are worse in both directions: [height]:not([height=
-   "auto"]) also matches ordinary nested stVerticalBlocks, which Streamlit
-   gives height="100%" as part of normal column layout, and painted this
-   background onto the board column too; and matching the literal
-   [height="560px"] instead silently couples this rule to the exact value
-   of MESSAGE_PANEL_HEIGHT_PX in chat.py, so changing that constant breaks
-   this styling with no error. The key class is stable under both.
-
-   resize: vertical adds a native browser drag handle to the chatbox's own
-   bottom-right corner, so a long answer that would otherwise need
-   scrolling inside the fixed-height box can be dragged taller instead. This
-   needs flex: none !important alongside it, because Streamlit's generated
-   class on this element sets `flex: 1 1 0%` -- a column-direction flex item
-   with flex-basis 0. Per the flexbox spec, a flex-basis other than auto
-   makes the main-axis size come from flex-grow/shrink distribution rather
-   than from the specified height at all, so while that rule stands the
-   height property is ignored no matter how it is set, including by the
-   resize handle, which works by setting exactly that inline height.
-   flex: none (equivalent to 0 0 auto) takes this element out of the
-   distribution, so its own height -- MESSAGE_PANEL_HEIGHT_PX normally, or
-   whatever it is dragged to -- is what renders.
-
-   The dragged height is deliberately not persisted: a rerun replaces this
-   DOM node and it returns to MESSAGE_PANEL_HEIGHT_PX. A plain CSS
-   affordance for the current conversation, not saved state. */
+   resize: vertical lets a long answer be dragged taller. It needs
+   flex: none, because Streamlit's flex-basis of 0 makes the browser
+   ignore any height, including the dragged one. The dragged height
+   resets on the next rerun. */
 div[data-testid="stVerticalBlock"].st-key-chat_panel {
     background: #F1E8D4;
     box-shadow:
@@ -131,18 +91,10 @@ div[data-testid="stVerticalBlock"].st-key-chat_panel {
     min-height: 200px;
 }
 
-/* Freeing the chatbox from flex-basis sizing above is necessary but not
-   sufficient. Every ancestor up to the two-column row carries its own
-   Streamlit-computed fixed pixel height (stLayoutWrapper, this column's
-   stVerticalBlock, stColumn, stHorizontalBlock), and none of them grow to
-   match, so a resized box overflows past them and draws on top of the chat
-   input below instead of pushing it down.
-
-   :has(.st-key-chat_panel) reaches those ancestors by relationship rather
-   than by their Emotion-hashed classnames, which are not stable selector
-   targets. height: auto lets each level size to its actual children again;
-   all are already overflow: visible, so none of them rely on the fixed
-   number to clip content. */
+/* Each ancestor up to the two-column row has a fixed pixel height from
+   Streamlit, so a resized panel would overlap the chat input instead of
+   pushing it down. height: auto on each, reached with :has() since their
+   class names are generated. */
 div[data-testid="stLayoutWrapper"]:has(.st-key-chat_panel),
 div[data-testid="stVerticalBlock"]:has(.st-key-chat_panel),
 div[data-testid="stColumn"]:has(.st-key-chat_panel),
@@ -150,30 +102,15 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-chat_panel) {
     height: auto !important;
 }
 
-/* Chat bubbles: originally keyed on stChatMessageAvatarUser/Assistant, but
-   that testid only exists for Streamlit's own built-in emoji/icon avatars
-   (confirmed by reading the compiled frontend) -- once the avatar became a
-   custom SVG image (see _CHAT_AVATARS), Streamlit renders a bare avatar
-   image element with no testid at all, and these rules silently stopped
-   matching anything. Do not write anything that looks like an HTML tag
-   inside comments in this style block, angle brackets included -- the
-   st.html() sanitizer silently drops the whole block whenever it finds
-   one, even inside a CSS comment (confirmed by bisection: a single such
-   comment reproduces the drop in total isolation, elsewhere in this file).
-   stChatMessageContent's aria-label is set unconditionally to
-   "Chat message from {role}" regardless of avatar type, so it stays
-   correct even if the avatar mechanism changes again later. */
-/* Avatar and message content are flex siblings with no gap by default --
-   wide content (a long line, a code span) runs right up against the
-   avatar's edge with no breathing room. */
+/* Chat bubbles are told apart by stChatMessageContent's aria-label
+   ("Chat message from user"), which is set whatever the avatar type.
+   No angle brackets anywhere in this file: the st.html sanitizer drops
+   the whole style block if a comment contains one. */
+/* Space between the avatar and the message. */
 div[data-testid="stChatMessage"] {
     gap: 14px;
 }
-/* stChatMessageContent stretches to fill the row but had no padding of
-   its own on the trailing edge -- wide lines ran flush against the
-   bubble's right edge (or, for the assistant, right up to the column's
-   own boundary, since that bubble's background/shadow live one level up
-   on stChatMessage, not on this element). */
+/* Keeps long lines off the bubble's right edge. */
 div[data-testid="stChatMessageContent"] {
     padding-right: 16px;
 }
@@ -183,10 +120,7 @@ div[data-testid="stChatMessage"]:has(
 ) {
     background: #6B1E2B;
     border-radius: 2px;
-    /* Matches the assistant bubble's own inset shadow below -- everything
-       else this app treats as a "carved" surface (chat input, code
-       blocks, that bubble) gets this same depth language; the user
-       bubble was the one flat rectangle left. */
+    /* Same inset as the assistant bubble and other carved surfaces. */
     box-shadow:
         inset 0 2px 3px rgba(0, 0, 0, 0.35),
         inset 0 -1px 0 rgba(237, 225, 204, 0.2);
@@ -199,12 +133,9 @@ div[data-testid="stChatMessage"]:has(
 div[data-testid="stChatMessage"]:has(
     [data-testid="stChatMessageContent"][aria-label="Chat message from assistant"]
 ) {
-    /* #F1E8D4 against the page's own #E8DCC3 background read as almost the
-       same tone -- reusing #DACBA8 (already the chat-input and inline-code
-       "recessed surface" color elsewhere on the page) plus the same inset
-       shadow the chat input uses gives every sunken/carved surface in the
-       app one consistent color and depth language instead of a bespoke
-       near-miss just for this bubble. */
+    /* #DACBA8, the recessed-surface color of the chat input and inline
+       code, with the same inset; the lighter card tone barely stood out
+       from the page. */
     background: #DACBA8;
     border: 1px solid #A88F72;
     border-radius: 2px;
@@ -213,16 +144,8 @@ div[data-testid="stChatMessage"]:has(
         inset 0 -1px 0 rgba(237, 225, 204, 0.35);
 }
 
-/* The st.status "Thinking..." panel (shown live while a response
-   generates, and the similar "Looking for related resources..." one --
-   both st.status, which renders as an stExpander under the hood, the
-   only place this app uses one) blended into its own chat bubble's
-   background: same tan tone, no visual separation. The dark walnut
-   treatment used for code blocks was tried here first and didn't work --
-   too heavy/dark for a panel holding a full sentence of rationale text,
-   unlike a short code/FEN snippet. Same lighter card tone the message
-   panel and .rec-card use instead, still with the inset depth every
-   other carved surface in the app has, just not dark. */
+/* Status boxes (st.status renders as an expander) use the light card tone
+   with an inset, so they stand out from the chat bubble behind them. */
 div[data-testid="stExpander"] {
     background: #F1E8D4;
     border-radius: 2px;
@@ -234,13 +157,9 @@ div[data-testid="stExpander"] [data-testid="stMarkdownContainer"] {
     color: #2B1F17;
 }
 
-/* Code blocks (st.code(), language=None everywhere it's used -- FEN, PGN,
-   move notation): config.toml's codeTextColor/codeBackgroundColor don't
-   reliably reach the "plaintext" language case Streamlit renders when no
-   language is set, confirmed by these coming through as illegible
-   near-black-on-black. !important is deliberate here: this overrides
-   Streamlit's own internal theme CSS of unknown specificity from the
-   outside, not a shortcut around this file's own rules. */
+/* Code blocks (FEN, PGN): config.toml's code colors don't reach the
+   plain-text case Streamlit uses with language=None, which rendered dark
+   on dark. !important overrides Streamlit's own theme CSS. */
 pre code.language-plaintext,
 pre code.language-plaintext span {
     background: transparent !important;
@@ -250,11 +169,8 @@ pre:has(code.language-plaintext) {
     background: #2B1F17 !important;
 }
 
-/* Inline code (backtick text inside a paragraph, not a full st.code()
-   block) was inheriting the same dark block treatment, showing as a
-   jarring near-black patch floating inside otherwise normal paragraph
-   text. Distinguished from block code via :not(pre code) and given its
-   own lighter, subtler inline treatment instead. */
+/* Inline code gets a light treatment of its own instead of the dark
+   code-block one. */
 code:not(pre code) {
     background: #DACBA8 !important;
     color: #2B1F17 !important;
@@ -263,41 +179,27 @@ code:not(pre code) {
     font-weight: 500;
 }
 
-/* The top-right "Running..." spinner (data-testid confirmed by reading
-   Streamlit's compiled frontend directly) is a framework chrome element,
-   not part of this app's own designed surface -- hidden rather than
-   themed. */
+/* Hides Streamlit's top-right "Running..." indicator. */
 div[data-testid="stStatusWidget"] {
     display: none;
 }
 
-/* The draggable board's element container gets overflow-y: auto from
-   Streamlit itself (confirmed by inspecting the live DOM). Subpixel
-   rounding at a given zoom/DPI, or the board settling into its fitted
-   width a frame after its container, can briefly trip that into showing
-   a scrollbar. The board is never meant to scroll internally, so this
-   turns it off outright. Scoped via :has() to the one element
-   container that actually holds the board, not every stElementContainer
-   on the page. */
+/* Streamlit gives the board's container overflow-y: auto, and subpixel
+   rounding or the board settling a frame late can flash a scrollbar. The
+   board never scrolls, so it's turned off. */
 div[data-testid="stElementContainer"]:has([class*="board-"]) {
     overflow-y: hidden !important;
 }
 
-/* The Lichess study embed (st.iframe) renders with square corners by
-   default, breaking the 2px radius (config.toml's baseRadius) used
-   everywhere else on the page -- overflow: hidden is needed alongside
-   border-radius since a border-radius alone doesn't clip an iframe's own
-   rendered content. */
+/* Rounds the Lichess embed's corners to the app's 2px radius;
+   overflow: hidden is needed to clip an iframe. */
 div[data-testid="stIFrame"] {
     border-radius: 2px;
     overflow: hidden;
 }
 
-/* Quarter-sawn grain: three layered streak patterns at slightly different
-   angles and widths, reading as sanded walnut planks rather than a flat
-   tint, so the empty parchment behind the chat panel isn't bare. Layered
-   as background-image on top of config.toml's backgroundColor, not a
-   replacement for it. */
+/* Wood grain: three layered streak patterns over config.toml's
+   background color. */
 div[data-testid="stApp"] {
     background-image:
         repeating-linear-gradient(91deg,
@@ -311,65 +213,22 @@ div[data-testid="stApp"] {
             transparent 1px, transparent 41px);
 }
 
-/* layout="wide" is needed for the board panel's 8-column position-editor
-   grid, but it also stretches the whole page edge to edge on a wide
-   window. stMainBlockContainer wraps the page title and everything below
-   it -- with no more tabs, this is the one screen, so capping its width
-   directly (confirmed via a live DOM walk from the chat input up) is all
-   that's needed, no :has() scoping required the way there was when a
-   second, full-width tab existed alongside this row. 1700px, split
-   roughly 3:2 between chat and board by the st.columns call itself, not
-   by CSS -- bumped from 1450px because chat_col's own message panel is
-   now a fixed-height scrolling box (see render_main_screen), so a
-   too-narrow chat_col means more of a given answer's text wraps onto
-   more lines, needing more scrolling within that fixed height to read
-   the same content. Widened the whole row rather than shifting the 5:4
-   ratio further toward chat, so board_col keeps the same safe margin
-   above the ~565px it actually needs (see below) instead of trading
-   away that margin for chat's gain. board_col itself is further split
-   for the board and its side controls (see _render_board_panel), and
-   needs real room for both: at a 1300px/3:2 split, the board's
-   fixed pixel size (BOARD_SIZE_PX in board_panel.py) does not
-   fit in its ~291px actual sub-column, and chessboard.js has no way to
-   shrink to match -- it just overflowed into a horizontal scrollbar.
-
-   align-self: flex-start, not margin -- stMain (this element's parent)
-   is a column flex container with align-items: center of its own, which
-   was centering this capped-width block with equal empty space on both
-   sides regardless of any margin set here (both margins compute to 0px,
-   yet the block still sits 310px from the left edge on a 1920px-wide
-   viewport). align-self overrides align-items for this one
-   flex item without touching stMain's rule for anything else it lays
-   out, and is what actually pins the page to its own left padding
-   instead of floating it in the middle of the window. */
+/* Caps the page width on wide screens; the columns split it 3:2 between
+   chat and board, which leaves the board room beside its controls.
+   align-self: flex-start pins the page to the left padding, since its
+   parent centers its children whatever the margins say. */
 div[data-testid="stMainBlockContainer"] {
     max-width: 1700px;
     align-self: flex-start;
-    /* Streamlit's own defaults here are 96px top / 160px bottom -- built
-       for a page meant to be scrolled, not this one, where the whole
-       point is fitting a fresh, question-less screen inside a laptop
-       viewport with no scroll at all (at a 14" MacBook's
-       default logical resolution, the unscrolled page needed ~1200px
-       against an ~980px-tall screen, before browser chrome even eats into
-       that). Trimmed hard, not just tightened -- this is by far the
-       single biggest reclaimable chunk on the page. */
+    /* Streamlit's 96px/160px default padding is trimmed so a fresh page
+       fits a 14" laptop screen without scrolling. */
     padding-top: 36px;
     padding-bottom: 12px;
 }
 
-/* The reliability caveat (render_main_screen, "Answers synthesize...") has
-   to stay on the page per CLAUDE.md, but as a quiet footnote, not a second
-   headline right under the title -- smaller than st.caption's own default
-   size. Margin trimmed too: it sits snug under the title row, part of
-   shrinking the page's whole top section, not just this one line.
-
-   #6E5C46, not the #8A7860 this was first shipped at: that lighter shade
-   measured 3.49:1 against the page background, below WCAG AA's 4.5:1 floor
-   for text this small -- "quieter" was pushed too far into "harder to
-   read," not just "less prominent." #6E5C46 computes to 5.25:1, real
-   margin above the floor rather than sitting right on it, while still
-   reading as a muted footnote next to the full-strength body text
-   elsewhere on the page. */
+/* The reliability caveat stays visible but as a quiet footnote under the
+   title. #6E5C46 keeps a 5.25:1 contrast ratio at this size, above WCAG
+   AA's 4.5:1. */
 .st-key-reliability_note {
     margin-top: -8px;
     margin-bottom: 4px;
@@ -379,55 +238,25 @@ div[data-testid="stMainBlockContainer"] {
     color: #6E5C46;
 }
 
-/* board_col (render_main_screen's board_panel wrapper, see chat.py) is the
-   real floor on the whole page's height -- its own natural content ran
-   taller than chat_col's even after the message panel was shrunk, so this
-   column, not that panel, decides how tall the row ends up. Streamlit's
-   own ~16px gap between every element here (board, Evaluate, the ask
-   form, the divider, Find related resources) adds up across six items;
-   tightened but not eliminated -- these are still visually distinct
-   controls, not one continuous block. The divider specifically carries
-   much more of its own margin than a single ruled line needs (measured
-   live: a 49px-tall element for what renders as 1px of visible line) and
-   gets trimmed further on top of the shared gap reduction. */
+/* Tighter spacing in the board column, the taller of the two, and a
+   trimmed divider (Streamlit's is 49px tall for a 1px line). */
 .st-key-board_panel {
     gap: 8px;
 }
 .st-key-board_panel hr {
-    /* 4px on both sides measured out to a near-zero gap in practice --
-       "Find related resources" sat close enough to overlap the line
-       itself. More room below than above: this line's real job is
-       separating the board/eval/ask-position controls above it from
-       "Find related resources" below, so that side needs the clearer
-       break. */
+    /* More room below the divider than above: it separates the board
+       controls from "Find related resources". */
     margin: 4px 0 16px;
 }
 
-/* The "Ask about this position" form (position_question_form) is the one
-   place left with a visible rectangular border drawn around the page's
-   own wood-grain background -- Streamlit's default stForm styling. That
-   combination reads as an unfinished card (a frame around a fill that
-   doesn't match it), not as intentional spacing, and it sits directly
-   between two un-boxed controls (Evaluate above, Find related resources
-   below) that already read fine showing the page background because
-   neither one draws a border around itself. Dropping the border makes
-   this consistent with both neighbors instead of being the one bordered
-   wrapper among plain ones -- the input and button inside still carry
-   their own distinct styling regardless, so legibility doesn't depend on
-   the outer box at all. */
+/* No border around the position question form, matching the unboxed
+   controls above and below it. */
 div[data-testid="stForm"] {
     border: none;
     padding: 0;
 }
 
-/* Streamlit's own built-in "Connection error" dialog (shown when the
-   WebSocket drops, e.g. the dev server got restarted) is injected by the
-   framework itself, not this app's own components, so on its own it
-   renders in Streamlit's default light theme instead of this app's
-   walnut/parchment identity -- confirmed by inspecting the actual dialog
-   DOM while it was showing. role="dialog" and stErrorCodeBlock are real,
-   stable attributes here, not generated Emotion hashes like most of the
-   rest of this file has to fall back to. */
+/* Streamlit's connection-error dialog, in the app's colors. */
 div[data-testid="stDialog"] section[role="dialog"] {
     background: #2B1F17;
     color: #EDE1CC;
@@ -442,11 +271,8 @@ div[data-testid="stDialog"] [data-testid="stErrorCodeBlock"] {
     margin-top: 12px;
 }
 
-/* The top toolbar (Deploy button, hamburger main menu) is framework
-   chrome rendered in Streamlit's own default colors, not this app's
-   walnut identity. The icon SVGs use fill="currentColor", so setting
-   color here (not just on the toolbar background) is what actually
-   recolors them, not just the button hit areas around them. */
+/* The top toolbar in the app's colors. Its icons use currentColor, so
+   setting color recolors them. */
 div[data-testid="stToolbar"] {
     background: #2B1F17;
     color: #EDE1CC;

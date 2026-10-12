@@ -99,13 +99,16 @@ must have `year` populated — it's required for trend synthesis, not optional.
 
 ## Current status / what's next
 
-All four layers, the recommendation/quality-classifier subsystem, the
-draggable board, the guided tour, and CI are built and tested. What's left
-before this is fully resume-ready: a security pass and a README (neither
-written yet). The "designed but not yet implemented" list above (trend
-synthesis, book corpus, annotated PGN export) is the honest list of what
-to build next if picking this back up as a feature project rather than a
-polish pass.
+Built and tested: all four layers, the recommendation subsystem, the board
+(browser-side moves with chess.js, tap-to-move on phones), a separate phone
+layout, the guided tour, the database keep-warm and stale-connection
+handling, the background resource lookup, the README, and CI. A dedicated
+security pass has not been done yet.
+
+Next, as of 2026-10-11: response time, open data sources so the app works
+without the licensed ChessBase annotations, new features, and more agents.
+The "designed but not yet implemented" list above (trend synthesis, book
+corpus, annotated PGN export) is still open, and PGN upload needs more work.
 
 ## Commands
 

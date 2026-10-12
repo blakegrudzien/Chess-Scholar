@@ -78,34 +78,16 @@ def strip_computer_glyphs(comment: str) -> str:
 def iter_plies_with_comments(
     game: chess.pgn.Game,
 ) -> Iterator[tuple[int, str, str, set[int]]]:
-    """Walk one parsed chapter/game's mainline, yielding
-    (ply, move_san, glyph_stripped_comment, nags) for every move -- comment
-    is an empty string for moves with no annotation, not omitted, so
-    callers can tell "no comment" from "ply doesn't exist" and still see
-    every move if they need to (compute_game_id needs the full move
-    sequence, not just the annotated plies).
+    """Yield (ply, move_san, comment, nags) for every mainline move of one
+    game or chapter; comment is "" when a move has none, so every move is
+    still seen (compute_game_id needs them all).
 
-    SAN is computed before each push, matching pgn_parser.parse_game,
-    since python-chess needs the pre-move board state to disambiguate
-    algebraic notation. Shared by _extract_game_annotations (structures
-    this into chunks-table-shaped records) and extract_chapter_comment_text
-    (joins it into one readable preview block) so the walk itself is
-    written once.
+    SAN is computed before each push, since it depends on the position
+    before the move.
 
-    Stops early (without raising) at the first move that isn't actually
-    legal in the position reached so far, instead of every subsequent
-    caller crashing on it -- observed in practice from a broader,
-    less-curated slice of scraped Lichess study PGN (python-chess's parser
-    is lenient about malformed movetext, so a mainline move can parse fine
-    while still not being legal in the resulting position). Checked before
-    calling board.san() rather than catching the AssertionError it raises
-    internally: an assert is not a contract to depend on (see
-    hash_utils.check_no_delimiter's own docstring on the same point) --
-    it's stripped entirely under python -O, so relying on catching it here
-    would silently stop working in that mode. The same "surface fewer
-    plies rather than crash the whole batch" tradeoff iter_study_chapters
-    already makes at the chapter level; this is the equivalent one ply
-    deeper, within a single chapter.
+    Stops at the first move that isn't legal in the position reached:
+    python-chess can parse such a move, and board.san() then fails with an
+    assertion. Checked explicitly, because asserts vanish under python -O.
     """
     board = game.board()
     for ply, node in enumerate(game.mainline(), start=1):
@@ -123,16 +105,10 @@ def _move_label(move_san: str, nags: set[int]) -> str:
 
 
 def extract_chapter_comment_text(game: chess.pgn.Game) -> str:
-    """Concatenate every prose comment in one parsed chapter/game into a
-    single readable block: the pre-game comment first (if any), then one
-    line per annotated move as "SAN<nags>: comment".
-
-    For the study labeling tool (scripts/label_studies_app.py), which needs
-    a quick human-readable preview of a Lichess study chapter's annotations
-    to judge quality without leaving the app -- not the chunks-table-shaped
-    output extract_annotations produces, since a preview reader wants the
-    prose, not a game_id to join chunks back to a games row.
-    """
+    """All the comments in one game or chapter as readable text: the
+    pre-game comment, then one "SAN<nags>: comment" line per annotated move.
+    Used by the study labeling tool (scripts/label_studies_app.py) as a
+    quick preview."""
     lines = []
     pre_game_comment = strip_computer_glyphs(game.comment)
     if pre_game_comment:

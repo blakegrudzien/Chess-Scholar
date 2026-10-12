@@ -1,10 +1,6 @@
-"""Cached, process-wide handles to the external resources the UI's tool
-calls need -- one DB pool, one engine pool, one Voyage client, one Anthropic
-client, one Lichess HTTP client/pacer for the whole deployment, not one per
-request. st.cache_resource caches per Python process, not per Streamlit
-session -- every concurrent user of a given deployment shares these same
-handles (ENGINE_POOL_SIZE's own comment already assumes this: it's sized to
-total deployment throughput, not per-user).
+"""Shared handles to external resources: database pool, engine pool, API
+clients, Lichess client and pacer. st.cache_resource keeps one of each per
+server process, shared by every visitor's session.
 """
 
 from __future__ import annotations
@@ -69,13 +65,8 @@ def get_lookup_executor() -> ThreadPoolExecutor:
 
 @st.cache_resource
 def get_lichess_pacer() -> RequestPacer:
-    # One pacer shared by every live recommend_resources() call across
-    # every session, not one per call -- otherwise REQUEST_PACING_SECONDS
-    # is enforced within a single call's own back-to-back
-    # get_lichess_study_chapters invocations at best, and not at all
-    # across two different users' concurrent requests, which is exactly
-    # the courtesy this pacer exists to provide (see RequestPacer's own
-    # docstring: "regardless of which caller issues them").
+    # One pacer for every session, so requests to Lichess stay spaced out
+    # across different visitors' lookups too.
     return RequestPacer()
 
 

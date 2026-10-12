@@ -1,10 +1,8 @@
-"""Layer 4 -- personalized structural similarity. A user uploads a PGN; we
-find corpus games that share the longest matching opening-move prefix.
+"""Layer 4: compares an uploaded game with the corpus by the longest run of
+identical opening moves.
 
-This is a deliberately simple, explainable metric (exact SAN match on a
-common opening line), not a rigorous positional-similarity model -- per
-CLAUDE.md, Layer 4 is approximate, and any UI surfacing these results
-should call them an "illustrative comparison," not authoritative.
+A simple, explainable measure rather than positional similarity, so results
+are presented as an illustrative comparison, not an authoritative one.
 """
 
 from __future__ import annotations
@@ -33,19 +31,16 @@ def find_similar_games(
     limit: int = 10,
 ) -> list[SimilarGame]:
     """Rank corpus games by how many of the first `max_ply` half-moves they
-    share with `user_moves`, counted from the start of the game (a longest
-    common opening prefix, not a fuzzy or positional match).
+    share with `user_moves` from the start (the longest common opening
+    prefix). Games sharing no moves are left out.
     """
     if not user_moves:
         raise ValueError("user_moves must be non-empty")
 
     target = list(enumerate(user_moves[:max_ply], start=1))
-    # The only thing interpolated into the query text below is this string,
-    # and it contains no caller data at all -- it is `len(target)` copies of
-    # the literal "(%s, %s)". Every move the user supplied is bound through
-    # `params`, so the moves are values, never SQL. A VALUES list has to be
-    # built this way because its length varies with the input and psycopg2
-    # has no placeholder for "a row set of unknown size".
+    # values_clause is only repeated "(%s, %s)" placeholders; the user's
+    # moves are bound as parameters. Built by hand because psycopg2 has no
+    # placeholder for a VALUES list of variable length.
     values_clause = ", ".join(["(%s, %s)"] * len(target))
     params: list[object] = [item for ply, san in target for item in (ply, san)]
 
@@ -68,9 +63,11 @@ def find_similar_games(
         JOIN games g ON g.game_id = matched.game_id
         LEFT JOIN moves fm ON fm.game_id = matched.game_id
             AND fm.ply = COALESCE(matched.first_mismatch_ply - 1, matched.plies_checked)
+        -- A game that differs from the first move shares nothing to compare.
+        WHERE COALESCE(matched.first_mismatch_ply - 1, matched.plies_checked) > 0
         ORDER BY match_length DESC, g.game_id
         LIMIT %s
-    """  # noqa: S608 -- values_clause holds only literal placeholders, see above
+    """  # noqa: S608 (values_clause holds only placeholders, see above)
 
     with conn.cursor() as cur:
         cur.execute(query, [*params, limit])

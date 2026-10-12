@@ -41,19 +41,13 @@ CREATE TABLE IF NOT EXISTS chunks (
     embedding VECTOR(1024)  -- voyage-4 / voyage-4-lite default dimension
 );
 
--- Recommendation feature: quality-passing Lichess study candidates, ready
--- for embedding similarity search. Populated by scripts/build_study_index.py,
--- not by ingestion -- title/likes are duplicated from the (gitignored, local-
--- only) study_candidates.jsonl file so the deployed app is fully
--- self-sufficient from this table alone, the same reason models/*.joblib is
--- committed rather than regenerated at deploy time.
+-- Lichess studies eligible for recommendation, with embeddings for
+-- similarity search. Filled by scripts/build_study_index.py. Title and
+-- likes are copied in from the local candidates file so the deployed app
+-- needs only this table.
 --
--- No IVFFlat index here, unlike chunks.embedding -- IVFFlat is an
--- approximate index that only pays for itself at real scale (thousands of
--- rows); at the row counts this table will actually hold (tens to low
--- hundreds), a plain `ORDER BY embedding <=> query LIMIT k` exact scan is
--- both simpler and faster. See chunks.embedding's own comment below for the
--- concrete failure mode this avoids repeating.
+-- No vector index: at tens to hundreds of rows an exact scan is simpler
+-- and faster than IVFFlat.
 CREATE TABLE IF NOT EXISTS lichess_study_cache (
     study_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -63,11 +57,9 @@ CREATE TABLE IF NOT EXISTS lichess_study_cache (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Every real question asked in the deployed app, logged for later eval work
--- (see src/ui/conversation_log.py) -- without this, a real conversation is
--- gone the moment the browser tab closes, since st.session_state.
--- chat_history is in-memory per session only. fen_context is nullable: most
--- questions have none (see chat.py's own fen_context param).
+-- Every question asked in the deployed app, kept for later review (see
+-- src/ui/conversation_log.py). fen_context is null for questions not asked
+-- about the board.
 CREATE TABLE IF NOT EXISTS conversation_log (
     id SERIAL PRIMARY KEY,
     asked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -86,16 +78,11 @@ CREATE INDEX IF NOT EXISTS idx_moves_capture ON moves(is_capture) WHERE is_captu
 -- opening prefix by ply across all games, not scoped to one game_id)
 CREATE INDEX IF NOT EXISTS idx_moves_ply_san ON moves(ply, move_san);
 
--- Index for Layer 2 vector search (IVFFlat). This script runs before the
--- corpus is loaded, so `chunks` is empty here and `lists` can't be sized
--- correctly yet -- IVFFlat's clustering quality depends on the row count at
--- BUILD time, not query time. Building it against an empty table produces a
--- degenerate index (effectively one giant list) that silently falls back to
--- scanning nearly the whole table on every query, no error, just ~100-300x
--- slower lookups. This index is intentionally left out of the initial
--- schema; after loading the corpus (and any time its size changes by an
--- order of magnitude), build or rebuild it explicitly with `lists` set to
--- roughly (row count / 1000) for up to ~1M rows:
+-- The Layer 2 vector index (IVFFlat) is not created here. Its clustering is
+-- fixed when it is built, and built on the empty table it degenerates into
+-- one big list that scans nearly everything (~100-300x slower, with no
+-- error). After loading the corpus, and whenever its size changes by an
+-- order of magnitude, build it with `lists` at about row count / 1000:
 --
 --   SET maintenance_work_mem = '256MB';  -- lists this size needs more than Neon's default 64MB
 --   CREATE INDEX idx_chunks_embedding ON chunks

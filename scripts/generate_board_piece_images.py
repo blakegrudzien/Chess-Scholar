@@ -3,11 +3,9 @@ the piece art matches the chess.svg pieces used everywhere else in the app
 (the chat avatars in particular) instead of chessboard.js's stock
 Wikipedia piece images.
 
-The custom Streamlit component's JS is passed to st.components.v2.component
-as an inline string, not served from a static directory, so there's no
-relative URL a browser could fetch a vendored image file from. Baking each
-piece as a base64 SVG data URI directly into a JS object literal sidesteps
-that entirely -- no network/file fetch at render time.
+The component's JavaScript is passed inline, with no static directory to
+serve image files from, so each piece is a base64 SVG data URI in a JS
+object.
 
 Regenerate whenever python-chess's SVG piece rendering changes:
     .venv/bin/python -m scripts.generate_board_piece_images

@@ -1,19 +1,12 @@
 """Visits the deployed Chess Scholar app with a real headless browser so
 Streamlit Community Cloud counts it as an actual visit, not just an HTTP hit.
 
-A plain curl ping is not sufficient here, and reports success whether or
-not the app is actually up: curl receives whatever the gateway is currently
-serving -- the static "this app has gone to sleep" page included -- with a
-normal 200/303, so its exit code says nothing about the state of the
-underlying app container. Waking the app, and keeping it awake, requires
-the full page load and WebSocket handshake that only a real browser
-performs, which is what this script does instead.
+A curl ping isn't enough: it gets a normal 200 even from the "this app has
+gone to sleep" page, and only a full page load with the WebSocket handshake
+counts as a visit.
 
-Exits non-zero if the app never actually loads within the timeout below --
-unlike curl's "any HTTP response is success", a real failure here means
-something is actually wrong (the app crashed, corpus DB is unreachable, a
-genuine outage), so it's worth this job going red instead of silently
-reporting green forever.
+Exits non-zero if the app doesn't load within the timeout, so a real
+outage turns the job red.
 """
 
 from __future__ import annotations
@@ -68,7 +61,7 @@ def main() -> int:
                     return 0
             page.wait_for_timeout(3_000)
 
-        print("App did not finish loading within the timeout -- treating as a failure.")
+        print("App did not finish loading within the timeout; treating as a failure.")
         browser.close()
         return 1
 

@@ -1,9 +1,6 @@
 name: Lint and test
 
-# Runs on every push to main and every pull request, so a broken commit or
-# lint violation can't land without something catching it automatically --
-# previously nothing in the repo enforced this, only manual runs before a
-# commit.
+# Lint and tests on every push to main and every pull request.
 on:
   push:
     branches: [main]
@@ -13,21 +10,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
-      # pyproject.toml declares requires-python = ">=3.11". Testing only
-      # whichever version happens to be installed on a given machine would
-      # leave that claim unverified; testing both endpoints of the stated
-      # range actually backs it up.
+      # Both ends of the supported range (requires-python = ">=3.11").
       matrix:
         python-version: ["3.11", "3.12"]
-    # tests/test_structured_search.py (Layer 1) and tests/test_similarity.py
-    # (Layer 4) both self-skip with pytest.mark.skipif when no local
-    # Postgres is reachable -- and tests/test_build_study_index.py also
-    # needs pgvector specifically. Before this service existed, nothing
-    # here provisioned a database at all, so those three files silently
-    # ran zero assertions on every single CI run with no failure signal
-    # (a skip isn't a failure) -- a green build meant "everything else
-    # passed," not "everything passed." pgvector/pgvector:pg16, not plain
-    # postgres, so the one image covers both needs instead of two services.
+    # The database tests skip when no Postgres is reachable, and a skip
+    # isn't a failure, so CI provides one; the pgvector image covers the
+    # tests that need vectors too.
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -41,11 +29,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      # No host/user/password args are passed anywhere these tests call
-      # psycopg2.connect(dbname=...) -- these are the standard libpq PG*
-      # env vars psycopg2 falls back to when none are given explicitly,
-      # matching the postgres service's own default user and the password
-      # set above.
+      # The tests connect with only a dbname; psycopg2 takes the rest from
+      # these standard libpq variables.
       PGHOST: localhost
       PGPORT: 5432
       PGUSER: postgres
@@ -67,12 +52,8 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      # The playwright *package* comes from ".[dev]", but the browser binary
-      # is a separate download that pip cannot express. Without this step
-      # tests/test_board_component.py's availability check fails and all of
-      # its cases skip -- and a skip is not a failure, so CI stays green
-      # while the draggable board goes completely untested. Same failure
-      # mode the postgres service above exists to prevent for the DB tests.
+      # pip installs Playwright but not its browser. Without the browser the
+      # board, tour and layout tests skip and CI stays green untested.
       - name: Install Playwright browser
         run: playwright install --with-deps chromium
 
@@ -85,11 +66,6 @@ jobs:
       - name: Check requirements.txt matches pyproject.toml
         run: python -m scripts.check_requirements_sync
 
-      # --cov, not a bare pytest run: pytest-cov is already a declared dev
-      # dependency, and measuring coverage is what makes a dropped test file
-      # or an untested new module visible instead of silently absent. No
-      # --cov-fail-under threshold yet -- a number picked to match today's
-      # coverage would only ratchet on accident; set one deliberately when
-      # there is a target worth holding to.
+      # Coverage makes an untested module visible. No minimum is set yet.
       - name: Test
         run: pytest -v tests --cov=src --cov-report=term-missing

@@ -1,20 +1,16 @@
-// Spotlights one real UI element at a time with a short tooltip -- a quick
-// guided tour launched from the "How this works" button in
-// tutorial_overlay/__init__.py. Fully client-side: Next/Back/Skip never
-// touch Streamlit, so stepping through the tour costs no rerun and no
-// network round trip.
+// The "How this works" tour: spotlights one page element at a time with a
+// tooltip. Runs entirely in the browser, so stepping through it never
+// reruns the app.
 export default function (component) {
   const { data } = component;
   const { launchId } = data;
 
-  // launchId 0 means the button has never been clicked (see __init__.py's
-  // docstring for why this is a counter, not a bool) -- stay dormant.
+  // launchId 0: the button hasn't been clicked yet.
   if (!launchId) return undefined;
 
-  // Phones (the layout's 640px breakpoint, see theme.css) get the steps in
-  // their own page order, their own wording where a step has one, and the
-  // tooltip as a bottom sheet: the board and chat are too tall on a phone
-  // screen to fit a floating tooltip beside them without covering them.
+  // Phones (the layout's 640px breakpoint) get the steps in page order,
+  // their own wording where a step has one, and the tooltip as a bottom
+  // sheet, since the board and chat are too tall for a tooltip beside them.
   const isPhone = window.matchMedia("(max-width: 640px)").matches;
   const steps = isPhone ? data.phoneStepOrder.map((i) => data.steps[i]) : data.steps;
 
@@ -50,14 +46,9 @@ export default function (component) {
   const nextBtn = tooltip.querySelector(".tour-next");
   const skipBtn = tooltip.querySelector(".tour-skip");
 
-  // Appended to document.body, not to `component.parentElement` -- a
-  // position: fixed element's containing block silently becomes the
-  // nearest ancestor with a transform/filter/contain property if one sits
-  // between the mount point and <html>, which there's no cheap way to
-  // audit for in Streamlit's own chrome. Anchoring to <body> directly
-  // sidesteps that whole class of bug. isolate_styles is False in
-  // __init__.py specifically so this file's CSS still reaches these three
-  // elements despite them living outside parentElement's own subtree.
+  // Added to document.body: a position: fixed element is positioned against
+  // any ancestor with a transform, which Streamlit's own markup might have.
+  // isolate_styles=False in __init__.py lets this CSS reach them there.
   document.body.appendChild(backdrop);
   document.body.appendChild(spotlight);
   document.body.appendChild(tooltip);
@@ -74,9 +65,8 @@ export default function (component) {
     const margin = 12;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    // Measured while still off-screen: visibility: hidden (unlike
-    // display: none) keeps the element in layout, so this reflects the
-    // tooltip's real rendered size for the step's actual text.
+    // Measured while hidden: visibility: hidden still lays the tooltip out,
+    // so this is its real size for this step's text.
     const ttRect = tooltip.getBoundingClientRect();
     const spaceBelow = vh - rect.bottom - margin;
     const spaceAbove = rect.top - margin;
@@ -103,29 +93,17 @@ export default function (component) {
     reveal();
   }
 
-  // Finds the nearest step at or past `start` (moving by `direction`, +1 or
-  // -1) whose target actually exists in the DOM right now, or -1 if none
-  // does. A step's element can be legitimately absent -- "Find related
-  // resources" only renders after the first chat exchange -- so a tour
-  // opened before that must skip it, not crash or spotlight an empty rect.
-  //
-  // Direction matters, not just "does this index resolve": Next searches
-  // forward and Back searches backward, so skipping a missing step never
-  // leaves a dead end. Searching forward regardless of which button was
-  // pressed strands the tour on one step, with Back and Next both landing
-  // on the same resolved index.
-  // Phones: scroll the target into the space between Streamlit's header and
-  // the bottom sheet, centred there if it fits and top-aligned if not.
-  // Streamlit scrolls its own main container, not the window.
-  // The chat and its input are the last things on a phone page, so there is
-  // nothing below them to scroll into: without extra room they would stay
-  // behind the sheet. A spacer the sheet's height is added for the tour's
-  // duration and removed by close().
+  // The chat and its input are last on a phone page, with nothing below to
+  // scroll into, so they'd stay behind the sheet. A spacer the sheet's
+  // height is added while the tour is open.
   const pageEnd = document.querySelector('[data-testid="stMainBlockContainer"]');
   const spacer = document.createElement("div");
   spacer.className = "tour-sheet-spacer";
   if (isPhone && pageEnd) pageEnd.appendChild(spacer);
 
+  // Phones: scroll the target into the space between Streamlit's header and
+  // the sheet, centred if it fits. Streamlit scrolls its own main
+  // container, not the window.
   function scrollAboveSheet() {
     spacer.style.height = `${tooltip.getBoundingClientRect().height}px`;
     const header = document.querySelector('[data-testid="stHeader"]');
@@ -138,6 +116,10 @@ export default function (component) {
     scroller.scrollBy({ top: rect.top - desiredTop, behavior: "smooth" });
   }
 
+  // The nearest step from `start`, moving by `direction` (+1 or -1), whose
+  // element is on the page, or -1. A step can be missing, and searching in
+  // the direction of travel means skipping it never leaves Back and Next
+  // stuck on the same step.
   function findStep(start, direction) {
     let i = start;
     while (i >= 0 && i < steps.length) {
@@ -151,10 +133,8 @@ export default function (component) {
   function showStep(index, direction = 1) {
     const i = findStep(index, direction);
     if (i === -1) {
-      // Ran off the end going forward (or "Done" was clicked): nothing left
-      // to show. Ran off the start going backward: there's truly nothing
-      // before the current step, so just stay put rather than closing --
-      // only Next reaching past the last step should end the tour.
+      // Past the last step going forward, the tour ends; going back past
+      // the first, it stays put.
       if (direction > 0) close();
       return;
     }
@@ -164,16 +144,13 @@ export default function (component) {
     stepLabelEl.textContent = `Step ${stepIndex + 1} of ${steps.length}`;
     titleEl.textContent = step.title;
     textEl.textContent = (isPhone && step.phoneText) || step.text;
-    // Not just stepIndex === 0 -- the first *resolvable* step (e.g. Step 2
-    // if Step 1's element isn't in the DOM yet) has nowhere valid to go
-    // back to either, even though its own index isn't 0.
+    // Disabled on the first step that exists, which isn't always index 0.
     backBtn.disabled = findStep(stepIndex - 1, -1) === -1;
     nextBtn.textContent = stepIndex === steps.length - 1 ? "Done" : "Next";
     if (isPhone) scrollAboveSheet();
     else target.scrollIntoView({ block: "center", behavior: "smooth" });
-    // Two rAFs: one to let the browser commit the scroll, one to let
-    // layout settle after it, before measuring the target's post-scroll
-    // position.
+    // Two animation frames: one for the scroll, one for layout to settle,
+    // before measuring the target.
     requestAnimationFrame(() => requestAnimationFrame(reposition));
   }
 
@@ -200,9 +177,8 @@ export default function (component) {
   });
   skipBtn.addEventListener("click", close);
   backdrop.addEventListener("click", close);
-  // capture: true -- scroll events don't bubble to window from most
-  // scrollable ancestors, so this has to be registered on the capture
-  // phase to see them at all.
+  // capture: true, since scroll events from inner containers don't bubble
+  // to window.
   window.addEventListener("resize", reposition, { passive: true });
   window.addEventListener("scroll", reposition, { capture: true, passive: true });
   window.addEventListener("keydown", onKeydown);

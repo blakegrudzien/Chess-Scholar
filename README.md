@@ -6,7 +6,7 @@ A chess research assistant that routes every question across four independent ba
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-**Live demo:** [chess-scholar.streamlit.app](https://chess-scholar.streamlit.app/) — hosted on a free tier, so the first load can take up to 30 seconds while the container starts. A full answer takes another 20-30 seconds, since most questions make several tool calls and at least one real engine search.
+**Live demo:** [chess-scholar.streamlit.app](https://chess-scholar.streamlit.app/). It's hosted on a free tier, so the first load can take up to 30 seconds while the container starts. An answer takes roughly 20 to 70 seconds, since most questions make several tool calls and at least one real engine search.
 
 ![Chess Scholar answering a strategic opening question by combining corpus statistics and annotation text](docs/screenshot.png)
 
@@ -16,7 +16,7 @@ Most "chat with your data" projects pick one retrieval strategy and stick to it.
 
 There is also a deeper reason a chess engine alone cannot fill this role. Stockfish evaluates a position by searching millions of candidate lines and returning a centipawn score and a best move; it has no concept of a "plan" and no way to explain, in words, why a move is right. That explanatory layer, the actual language of chess instruction, only exists in text a human wrote: annotated games, opening theory, strategy books. An engine call answers whether a move is good. A semantic search over annotated commentary answers why. Neither substitutes for the other, which is the real reason Layers 2 and 3 are separate systems here rather than one.
 
-This project treats that as the actual problem: given a natural-language question, decide which of several structurally different backends (or which combination) can answer it, then synthesize a single coherent response. The routing is not a keyword matcher or an intent classifier trained for the purpose. It is Claude Sonnet 5's own tool-calling, given four tools and a system prompt describing when each applies, deciding for itself which to call, in what order, and how many times. Read the *why* behind that choice in [Design decisions](#design-decisions-worth-noting) below.
+This project treats that as the actual problem: given a natural-language question, decide which of several structurally different backends (or which combination) can answer it, then synthesize a single coherent response. The routing is not a keyword matcher or an intent classifier trained for the purpose. It is Claude Sonnet 5's own tool-calling, given eight tools across the four layers and a system prompt describing when each applies, deciding for itself which to call, in what order, and how many times. Read the *why* behind that choice in [Design decisions](#design-decisions-worth-noting) below.
 
 The result is a chat interface whose answers draw the positions they discuss as inline diagrams, a board to play on and ask about (drag on desktop, tap on phones), and two supporting features built on the same corpus: point-in-time evaluation against Stockfish, and an "illustrative comparison" that matches an uploaded game's opening moves against 127,000 games of the master-level corpus.
 
@@ -77,23 +77,21 @@ The training set excludes one genre entirely: every narrative-genre label collec
 
 ## Design decisions worth noting
 
-A few choices in this codebase were deliberate enough to be worth explaining rather than leaving implicit.
+The choices below shaped the codebase most.
 
 - **No LangChain or LlamaIndex.** Retrieval logic here is raw SQL and direct API calls. That is a slower way to build a RAG pipeline and a much easier one to actually explain: every retrieval step in this project can be pointed to in source, not gestured at through a framework's abstraction.
 - **Tool calling instead of a routing classifier.** An earlier design routed questions through a hand-tuned classifier before deciding which backend to query. It was dropped in favor of trusting the model's own tool-calling judgment, the same pattern used throughout Anthropic's own agent guidance: give the model well-described tools and let it decide, rather than building a second, weaker model whose only job is to imitate that decision.
 - **Instant moves in the browser, python-chess has the final say.** The board is a custom `st.components.v2` component wrapping chessboard.js plus chess.js. The browser plays legal moves immediately (dragging on desktop, tap-to-move on phones) and rejects illegal ones without a server round trip. Every legal move is still sent to python-chess, which checks and records it; the browser redraws from the server's position only when the two differ. This is the same split online chess sites use: the client predicts for responsiveness, and the server never trusts a client-supplied position.
-- **A concurrent-evaluation tool, added after a real reported slowness.** Comparing several candidate moves used to mean one sequential Stockfish call per candidate, each a full model round trip. A `compare_candidate_moves` tool runs the candidates against a pool of engine subprocesses in parallel instead, cutting a multi-minute comparison down to roughly the cost of evaluating one move.
-- **Every external call that can fail, does get caught.** An unauthenticated app talking to three paid external APIs (Anthropic, Voyage, Lichess) plus a free-tier PostgreSQL instance will eventually see a rate limit, a dropped connection, or a timeout. Those are caught explicitly and shown as a plain retry message, not a raw Python traceback (`showErrorDetails = "none"` in production, with full detail still reaching structured logs).
+- **Parallel engine comparisons.** Comparing candidate moves one Stockfish call at a time costs a model round trip per candidate and can take minutes. The `compare_candidate_moves` tool evaluates all the candidates at once on a pool of engine processes, so a comparison costs about as much as evaluating one move.
+- **Every external call that can fail is handled.** An unauthenticated app talking to three paid external APIs (Anthropic, Voyage, Lichess) plus a free-tier PostgreSQL instance will eventually see a rate limit, a dropped connection, or a timeout. Those are caught and shown as a plain retry message, never a Python traceback (`showErrorDetails = "none"` in production, with full detail in the logs). Database connections that went stale while idle are tested and replaced before use, and the database is kept awake while someone is using the app.
 - **A session-local rate limit, not a global one.** Eight requests per minute per browser session, checked before a question ever reaches the model. It will not stop a determined attacker opening fresh sessions, but it does stop the far more likely case of a stuck retry or an accidental double-click, without penalizing every other concurrent visitor the way a shared counter would.
 
 ## Known limitations
 
-Stated here deliberately rather than left to be discovered:
-
 - Chat answers synthesize retrieved human commentary and engine output. They are not the model's own independent tactical judgment, and the model is explicitly instructed not to present them as one.
 - The "find similar games" comparison (Layer 4) matches on exact opening move sequences, not positional understanding. It is an illustrative, approximate comparison, not a rigorous one.
 - The recommendation pool's quality classifier was trained on 184 hand-labeled examples by a single labeler. It is a reasonably capable filter, not a large-scale model.
-- The interface is designed for a desktop-sized viewport. It is usable on a phone — Streamlit stacks the two columns and the board scales to fit — but nothing is tuned for that case: the board ends up below the full-height chat panel rather than beside it, so the way it stays in sync with the conversation is much harder to notice.
+- The "upload a game" comparison is basic: one PGN at a time, compared on its opening moves only.
 - Trend synthesis across time periods (openings gaining or losing popularity by decade) is designed for in the schema but not yet built end to end.
 
 ## Tech stack
@@ -104,7 +102,7 @@ Stated here deliberately rather than left to be discovered:
 | Embeddings | Voyage AI `voyage-4` | Anthropic's recommended embeddings partner; Anthropic has no first-party embedding model |
 | Database | PostgreSQL + pgvector (Neon) | One database for both relational corpus data and vector search, on a free tier that still supports a live public demo |
 | Engine | Stockfish via `python-chess` UCI integration | Ground-truth evaluation, pooled across subprocesses for concurrency |
-| Frontend | Streamlit | A draggable board component wraps chessboard.js as a custom `st.components.v2` component; everything else is server-rendered Streamlit |
+| Frontend | Streamlit | A custom `st.components.v2` board wraps chessboard.js and chess.js (drag on desktop, tap-to-move on phones); everything else is server-rendered Streamlit, with a separate phone layout done in CSS |
 | Linting/formatting | ruff | One tool instead of a black/flake8/isort combination |
 
 ## Running locally
@@ -127,9 +125,9 @@ Master game annotations are exported from ChessBase 17 under the author's own li
 
 ## Testing
 
-255 tests, run against both Python 3.11 and 3.12 in CI. A handful require a local PostgreSQL with pgvector and self-skip with a clear reason when one is not available; CI itself provisions both, so a passing build always exercises the real thing, including the database schema's own constraints, not just mocked versions of it.
+Over 300 tests, run against Python 3.11 and 3.12 in CI. The database tests need a local PostgreSQL with pgvector, and the browser tests need Playwright with Chromium; each skips with a reason when its dependency is missing, and CI provides both, so a passing build covers the real schema and a real browser.
 
-The suite leans toward regression tests for real, previously-reproduced bugs (a dropped database connection mid-session, a PGN upload malformed enough to crash a naive parser, a concurrent evaluation race) rather than only happy-path coverage.
+The browser tests drive the actual app in Chromium, at phone and desktop sizes: dragging and tapping moves, the phone layout, the guided tour, and the background resource lookup. The rest covers failure cases as well as the normal path: a database connection dropped mid-session, a PGN upload malformed enough to crash a naive parser, concurrent engine requests.
 
 ```bash
 pytest -v tests

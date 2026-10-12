@@ -1,8 +1,6 @@
-"""Layer 3 -- Stockfish ground-truth evaluation via python-chess's UCI
-integration. Used to keep LLM commentary grounded (e.g. checking whether a
-human annotator's claim like "brilliant move" matches the engine's verdict,
-or scoring moves for annotated PGN export) instead of letting the agent
-judge tactical soundness on its own.
+"""Layer 3: Stockfish evaluation through python-chess's UCI support, so the
+agent's claims about move quality rest on the engine rather than its own
+judgment.
 """
 
 from __future__ import annotations
@@ -17,16 +15,9 @@ from dotenv import load_dotenv
 
 DEFAULT_DEPTH = 18
 
-# The agent exposes `depth` as a tool argument the model sets from free-text
-# conversation (see chess_agent.evaluate_chess_position/compare_candidate_
-# moves), and this app has no auth -- an unusually deep request would pin a
-# CPU core for a long time on a deployment-wide pool of only
-# src.ui.resources.ENGINE_POOL_SIZE engines. Clamped here, not at the tool
-# layer, so every caller of evaluate_position (both agent tools, plus
-# evaluate_game) gets the same ceiling regardless of what depth it was asked
-# for. 24 is comfortably past DEFAULT_DEPTH's 18 -- room for a caller that
-# genuinely wants a deeper look -- while still bounding worst-case search
-# time to a reasonable few seconds on typical positions.
+# The model chooses `depth`, and a very deep search would hold one of the
+# few shared engines for a long time. Clamped here so every caller gets the
+# same ceiling; 24 still allows a deeper look than the default 18.
 MAX_DEPTH = 24
 
 # Centipawn-loss thresholds for classify_move, from the mover's perspective.
@@ -49,15 +40,10 @@ class PositionEval:
 
 
 def get_engine_path() -> str:
-    # override=True: .env must win over anything already in os.environ.
-    # Streamlit auto-loads .streamlit/secrets.toml into the environment
-    # before app.py runs; that file exists only as a staging copy for
-    # pasting into Streamlit Cloud's dashboard, but Streamlit doesn't know
-    # that and injects it locally too. Without override=True, load_dotenv()
-    # leaves that value in place instead of using .env's local one -- e.g.
-    # STOCKFISH_PATH ends up as the deployed container's Linux path
-    # (/usr/games/stockfish) even on a Mac. No effect in the actual
-    # deployment, where .env doesn't exist and there's nothing to override.
+    # override=True: Streamlit also loads .streamlit/secrets.toml (kept
+    # locally as a copy of the deployed secrets) into the environment, and
+    # locally .env must win, or STOCKFISH_PATH would be the deployed Linux
+    # path. In deployment there is no .env, so nothing changes.
     load_dotenv(override=True)
     return os.environ["STOCKFISH_PATH"]
 
@@ -127,9 +113,9 @@ def _to_comparable_cp(position_eval: PositionEval) -> int:
 def classify_move(eval_before: PositionEval, eval_after: PositionEval) -> str:
     """Classify a move by centipawn loss, from the mover's perspective.
 
-    `eval_before` must be evaluated before the move (mover to move), and
-    `eval_after` after it (opponent to move) -- eval_after is negated since
-    PositionEval scores are always from the side-to-move's own perspective.
+    `eval_before` is the position before the move (mover to move) and
+    `eval_after` the position after it. eval_after is negated, since scores
+    are from the side to move's perspective.
     """
     before_cp = _to_comparable_cp(eval_before)
     after_cp = -_to_comparable_cp(eval_after)

@@ -1,11 +1,6 @@
-"""The board column: a draggable board, its controls, and the two ways to
-ask a question about whatever position is currently shown.
-
-Split out of chat.py, which owns the conversation side of the same screen.
-The dependency runs one way -- chat.py composes this panel into its layout,
-and nothing here imports chat.py -- so the board's state machine (free play
-vs. replaying a recommended game) can be read without the chat transcript's
-rendering logic interleaved through it.
+"""The board column: the board, its controls, and the two ways to ask about
+the position shown. chat.py lays this panel out; nothing here imports
+chat.py.
 """
 
 from __future__ import annotations
@@ -27,17 +22,11 @@ def _attempt_move(source: str, target: str) -> None:
     browser already checked it with chess.js. Promotions default to a queen,
     matching the browser.
 
-    source/target arrive from chess_board() as plain strings chosen by the
-    component's JavaScript. In normal use they are a real drag's two
-    algebraic squares, but nothing on the Python side enforces that shape, so
-    a pair that isn't valid UCI input at all (as opposed to merely an illegal
-    move) is rejected the same honest way rather than raising
-    InvalidMoveError through to Streamlit's full-traceback error page.
+    source and target come from the browser, so anything that isn't valid
+    UCI is rejected like an illegal move instead of raising.
 
     board_generation is bumped for every move, accepted or rejected, so the
-    board hears back either way: a confirmation when Python's FEN matches
-    the one it drew, or a rejected move's unchanged FEN to put the pieces
-    back -- see chess_board()'s docstring.
+    board always hears back (see chess_board()).
     """
     board: chess.Board = st.session_state.board
     try:
@@ -54,9 +43,8 @@ def _attempt_move(source: str, target: str) -> None:
     st.session_state.board_generation += 1
 
 
-# Human-readable text per python-chess Termination reason. Only the
-# standard-chess terminations appear here; the variant-specific ones
-# (VARIANT_WIN and friends) can't arise from a chess.Board.
+# Wording per python-chess Termination reason; variant-only reasons can't
+# occur on a chess.Board.
 _TERMINATION_TEXT = {
     chess.Termination.CHECKMATE: "Checkmate",
     chess.Termination.STALEMATE: "Draw by stalemate",
@@ -69,25 +57,22 @@ _TERMINATION_TEXT = {
 
 
 def game_status(board: chess.Board) -> str | None:
-    """A finished game's result, or a draw the side to move could claim --
-    None while the game is simply in progress.
+    """A finished game's result, or a draw the side to move could claim;
+    None while the game is in progress.
 
-    Claimed and automatic draws are reported differently on purpose. Under
-    FIDE rules threefold repetition and the fifty-move rule are a player's
-    right to claim, not an automatic result, while fivefold repetition and
-    the seventy-five-move rule end the game on their own. Collapsing the two
-    into one "Draw" message is a common chess-app bug.
+    Under FIDE rules threefold repetition and the fifty-move rule are draws
+    a player may claim, while fivefold repetition and the seventy-five-move
+    rule end the game, so the two are worded differently.
 
-    Repetition and move-counter draws need the move history to detect, so
-    they can't be found in a position loaded from a bare FEN (game replay,
-    where board.move_stack is empty). Checkmate, stalemate and insufficient
-    material are properties of the position alone and are still caught there.
+    Repetition and move-count draws need the move history, which a position
+    loaded from a FEN (game replay) doesn't have; checkmate, stalemate and
+    insufficient material are still detected there.
     """
     outcome = board.outcome()
     if outcome is not None:
         if outcome.termination is chess.Termination.CHECKMATE:
             winner = "White" if outcome.winner == chess.WHITE else "Black"
-            return f"Checkmate -- {winner} wins."
+            return f"Checkmate. {winner} wins."
         return f"{_TERMINATION_TEXT[outcome.termination]}."
 
     claimable = board.outcome(claim_draw=True)
@@ -103,9 +88,7 @@ def _render_board_controls(
     distinct (see render_board_panel)."""
     if status is None:
         st.caption(f"Turn: {'White' if current_board.turn else 'Black'}")
-    # A caption with inline code rather than st.code(): a single short FEN
-    # doesn't need a full code panel's padding and copy button, and this
-    # matches the "Position: `{fen}`" captions in the transcript.
+    # Inline code in a caption, matching the transcript's position captions.
     st.caption(f"FEN: `{current_board.fen()}`", help=FEN_HELP)
     if replaying:
         return
@@ -125,56 +108,37 @@ def _render_board_controls(
 
 
 def render_board_panel(*, disabled: bool = False) -> None:
-    """A draggable board reflecting the position under discussion, plus a
-    quick-eval button, Reset/Undo, and a free-text "ask about this position"
-    form. While replaying a recommended game (st.session_state.game_path is
-    not None) the board is read-only and steps through that game's moves
-    instead, with Evaluate/Ask-position operating on whatever ply is shown.
+    """The board, Reset/Undo, an Evaluate button and an "ask about this
+    position" box. While a recommended game is replayed
+    (st.session_state.game_path is set), the board is read-only and steps
+    through that game, and Evaluate and Ask apply to the ply shown.
 
-    Moves are drawn in the browser: chess_board() plays legal moves
-    instantly with chess.js and rejects illegal ones without contacting the
-    server. Each legal move still reaches _attempt_move, which checks it
-    against python-chess and records it; if python-chess ever rejects one,
-    the unchanged FEN sent back makes the board put the pieces back.
+    The browser plays legal moves itself (chess.js); each one still reaches
+    _attempt_move, where python-chess checks and records it.
 
-    Dragging is disabled outright during replay rather than left enabled and
-    ignored: st.session_state.board is the free-play board sitting behind the
-    visible replay position, not a copy, so a drag left live there would
-    corrupt it invisibly.
+    Moving is turned off during replay: st.session_state.board holds the
+    free-play game behind the replay, and a move would change it unseen.
 
-    Neither question button calls the agent directly. Both stash a
-    (question, fen) pair in st.session_state.pending_question and rerun, so
-    the submission -- and the live status/streaming UI it renders -- happens
-    from the chat column on the next script pass rather than inside this
-    narrow one. See chat._submit_question's docstring.
+    The question buttons set st.session_state.pending_question and rerun,
+    so the answer renders in the chat column (see chat._submit_question).
 
-    disabled=True renders every control inert and the board undraggable,
-    which the caller sets while an answer is generating. Any widget
-    interaction during a run cancels that run, and the agent call happens
-    inside one -- so a drag or a button press mid-answer would silently
-    discard the answer being generated. Disabling the controls is what makes
-    that unreachable rather than merely discouraged.
+    disabled=True, set while an answer generates, makes every control inert:
+    any click would cancel the answer.
     """
     replaying = st.session_state.game_path is not None
     if replaying:
         current_board = chess.Board(st.session_state.game_path[st.session_state.game_path_index])
     else:
-        # The same object held in session_state, not a copy, so Undo's
-        # current_board.pop() below mutates the stored board in place.
+        # The stored object itself, so Undo's pop() below changes it.
         current_board = st.session_state.board
 
-    # Turn/FEN/Reset/Undo (or, during replay, the ply label and Prev/Next)
-    # sit beside the board rather than stacked below it, to close the height
-    # gap between this column and the chat column. The ratio has to leave at
-    # least BOARD_SIZE_PX for the board itself: chessboard.js won't shrink
-    # below that, so a narrower share overflows at laptop widths.
+    # Controls sit beside the board on wide screens so the board column
+    # isn't much taller than the chat; Streamlit stacks them on phones.
     board_display_col, controls_col = st.columns([5, 2])
 
     with board_display_col:
-        # The keyed container gives the tutorial overlay a stable
-        # `.st-key-tutorial_board_target` selector to spotlight. The board
-        # itself is keyed too, so it persists across reruns and keeps the
-        # moves it already drew (see chess_board()'s docstring).
+        # The container's key is the tour's spotlight target. The board is
+        # keyed too, so it persists across reruns (see chess_board()).
         with st.container(key="tutorial_board_target"):
             drop = chess_board(
                 current_board.fen(),
@@ -190,9 +154,8 @@ def render_board_panel(*, disabled: bool = False) -> None:
     status = game_status(current_board)
 
     with controls_col:
-        # Feedback a move can produce (game result, illegal-move warning)
-        # and the replay controls stay outside the "Board controls"
-        # expander below, so collapsing it on a phone never hides them.
+        # Move feedback and replay controls stay outside the "Board
+        # controls" expander, so collapsing it on a phone never hides them.
         if status is not None:
             st.caption(status)
 
@@ -200,14 +163,11 @@ def render_board_panel(*, disabled: bool = False) -> None:
             index = st.session_state.game_path_index
             last_index = len(st.session_state.game_path) - 1
             st.caption(
-                f"{st.session_state.game_path_label} -- ply {index} of {last_index}",
+                f"{st.session_state.game_path_label}, ply {index} of {last_index}",
                 help=PLY_HELP,
             )
-            # Stacked rather than side by side: this column is too narrow for
-            # two buttons abreast. shortcut= is a native st.button parameter;
-            # it stays out of the way while a text input has focus (arrow
-            # keys still move the text cursor there) and fires globally
-            # otherwise, so replay navigation needs no keyboard component.
+            # Stacked, since the column is too narrow for two buttons side by
+            # side. The arrow-key shortcuts don't fire while typing in a box.
             if st.button("Previous", shortcut="Left", disabled=disabled or index == 0):
                 st.session_state.game_path_index -= 1
                 st.session_state.board_generation += 1
@@ -224,18 +184,15 @@ def render_board_panel(*, disabled: bool = False) -> None:
                 st.rerun()
         else:
             if current_board.is_game_over():
-                # Every drag is rejected once the game is over, so the
-                # generic "try again" below would be actively misleading --
-                # there is no legal move to try. Reset is the way forward.
+                # No move is legal once the game is over, so point to Reset
+                # instead of the usual "try again".
                 st.info(f"{status} Reset the board to play again.")
             elif st.session_state.last_illegal_attempt is not None:
                 st.warning("That move isn't legal. Try again.")
 
-        # Rendered twice, and theme.css shows one per screen size: a plain
-        # block on wider screens, and a collapsed "Board controls" expander
-        # on phones to keep the chat close to the board. CSS can make a
-        # closed expander's contents visible but not clickable, since the
-        # browser still routes clicks to the closed element.
+        # Rendered twice; theme.css shows a plain block on wide screens and
+        # a collapsed expander on phones. (CSS can show a closed expander's
+        # contents but not make them clickable.)
         with st.container(key="board_controls_wide"):
             _render_board_controls(current_board, status, replaying, disabled, layout="wide")
         with st.container(key="board_controls_phone"), st.expander("Board controls"):
@@ -254,27 +211,16 @@ def render_board_panel(*, disabled: bool = False) -> None:
         )
         st.rerun()
 
-    # Narrower than the full-width Evaluate button above it: a single short
-    # question doesn't need the whole column, and the contrast with a
-    # full-width primary action directly above makes the trailing space read
-    # as deliberate.
-    #
-    # Wrapped in a keyed container for the same reason the board is.
-    # st.form's own key= lands on its internal FormSubmitter button (it
-    # renders as st-key-FormSubmitter-<form_key>-<button_label>), never on
-    # the form element, so a `.st-key-position_question_form` selector can
-    # only match a wrapper. The form keeps a separate key because Streamlit
-    # forbids two elements sharing one key in the same run.
+    # Narrower than the Evaluate button above. The keyed container is the
+    # tour's target: st.form puts its own key on the submit button, not the
+    # form, and the two keys must differ.
     form_col, _ = st.columns([3, 1])
     with (
         form_col,
         st.container(key="position_question_form"),
         st.form("position_question_form_widget", clear_on_submit=True),
     ):
-        # A placeholder rather than a visible label, matching the main chat
-        # input's look. label_visibility="collapsed" rather than omitting the
-        # label: a real label is still required for screen readers, it just
-        # isn't shown.
+        # The label is hidden but kept for screen readers.
         position_question = st.text_input(
             "Ask about this position...",
             placeholder="Ask about this position...",

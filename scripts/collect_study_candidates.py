@@ -1,33 +1,23 @@
-"""Collect a raw pool of Lichess studies for the recommendation feature's
-quality-classifier labeling step.
+"""Collect a pool of Lichess studies to hand-label for the quality
+classifier.
 
-Pulls from Lichess listing sorts to get contrast in the pool the user will
-hand-label from:
+Three listing sorts give the pool a spread of quality:
 
-  - "popular": Lichess's own most-liked studies, a positive-skewed sample
-  - "newest": freshly created, unvetted studies, a negative-skewed sample
-  - "hot": recently active studies -- verified live to span roughly 9 to a
-    few thousand likes, filling the gap "popular" and "newest" leave empty
-    (the first two sorts alone produced a training set with a hard gap:
-    zero candidates between 5 and 1000 likes, since "popular" only surfaces
-    the extreme top and "newest" only the extreme bottom)
+  - "popular": the most-liked studies, skewed good
+  - "newest": new, unvetted studies, skewed weak
+  - "hot": recently active studies, from about 9 to a few thousand likes,
+    filling the gap the other two leave (they alone had nothing between
+    5 and 1000 likes)
 
-All three come from lichess_scraper (there is no API for "list studies by
-popularity"), while the full content of each discovered study is fetched
-through the documented lichess_client API. Results are written to a local,
-gitignored JSONL file -- one candidate per line -- so the labeling app
-(Step 3) can review them offline without hitting Lichess again.
+The listings come from lichess_scraper (the API can't list by
+popularity); each study's content comes from the lichess_client API.
+Candidates go to a local, gitignored JSONL file, one per line, for the
+labeling app to read offline.
 
-Re-running this script is additive, not destructive: existing candidates in
-the output file (and, by extension, any labels already recorded against
-them in study_labels.jsonl) are preserved. New candidates are merged in;
-already-known study_ids are skipped before ever issuing a content-fetch
-request for them, both to save requests and because their labels must stay
-matched to the exact record they were labeled against.
+Reruns are additive: known studies are skipped before fetching, so their
+labels stay matched to the record they were made against.
 
-Usage (run as a module from the repo root, not as a bare script path --
-"python scripts/x.py" puts scripts/ on sys.path instead of the repo root,
-which breaks the "from src...." imports below):
+Run as a module from the repo root, so the `src` imports resolve:
     .venv/bin/python -m scripts.collect_study_candidates --popular-count 100 --newest-count 100
     .venv/bin/python -m scripts.collect_study_candidates --hot-count 80
 """
@@ -79,18 +69,11 @@ def _load_existing_records(output_path: Path) -> dict[str, dict]:
 
 
 def collect_candidates(sort_counts: dict[str, int], output_path: Path) -> None:
-    """Collect and persist study candidates.
+    """Collect and save study candidates.
 
-    The listing walk and the per-study content fetch both make many
-    sequential, rate-limited requests against a real third-party site --
-    minutes of work that's expensive to redo. Everything gathered into
-    `existing` is written out in a finally block, not only on a clean
-    exit, so an unexpected failure partway through (a transient network
-    error, a Lichess response this code doesn't yet know how to handle)
-    loses only the work after the last write, not the whole run. The
-    concrete case this guards against is a listing sort's hard page-depth
-    limit (see iter_studies_by_sort's handling of it), which ends a run
-    partway through after real work has already been done.
+    A run is minutes of rate-limited requests, so results are written in a
+    finally block: a failure partway through loses only the work since the
+    last write.
     """
     existing = _load_existing_records(output_path)
     logger.info("Found %d existing candidates in %s", len(existing), output_path)

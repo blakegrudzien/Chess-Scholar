@@ -1,25 +1,14 @@
-"""Study recommendation pipeline: given a chat question, decide whether any
-external resources (a Lichess study chapter, a ChessBase master game) are
-worth surfacing alongside the chat answer, and if so, which ones.
+"""Resource recommendations: decide whether a Lichess study chapter or a
+ChessBase master game is worth showing alongside a chat answer, and which.
 
-A separate small agent from src/agent/chess_agent.py, not a branch inside
-it, and built the same way: native tool-calling decides everything, not
-hand-rolled procedural logic. Concretely, this means no explicit "infer the
-relevant ECO code" step written in Python -- the find_chessbase_game tool
-takes eco_codes as a parameter and the model supplies them from its own
-opening theory knowledge, exactly how get_eco_summary already works in the
-main chat agent. Recommending nothing at all is a valid, expected outcome,
-not an error case: forcing a fixed quota of resources per question would
-produce worse results than trusting relevance, the same reasoning that
-motivated dropping the earlier drill/concept genre-routing design in favor
-of pure similarity search.
+A small agent of its own, separate from the chat agent and built the same
+way: the model decides through tool calls. It supplies ECO codes to
+find_chessbase_game from its own opening knowledge, as it does for
+get_eco_summary in the chat agent. Recommending nothing is a normal
+outcome; a fixed quota would surface weaker matches.
 
-The two recommend_* tools are the loop's forced structured output: unlike
-every other tool here, their return value isn't meant to inform a further
-turn, it's how the orchestrating code learns what the model decided. Each
-call is recorded via a closure-captured list rather than parsed from the
-model's final text, the same reason the rest of this project prefers
-native tool schemas over parsing free text.
+The recommend_* tools are how the model reports its picks: each call is
+recorded in a shared list rather than parsed out of free text.
 """
 
 from __future__ import annotations
@@ -34,6 +23,7 @@ import psycopg2.pool
 import voyageai
 from anthropic import beta_tool
 
+from src.config import CLAUDE_MODEL
 from src.ingestion.db_loader import query_with_retry
 from src.recommendation.lichess_client import RequestPacer, study_chapter_embed_url
 from src.recommendation.lichess_scraper import fetch_study_chapters
@@ -46,25 +36,13 @@ from src.search.structured_search import (
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-5"
 MAX_TOKENS = 2048
 
-# Ceiling on tool-calling round trips for one lookup, for the same reason
-# chess_agent.MAX_AGENT_TURNS exists: this runs behind a button on a public,
-# unauthenticated app and chains Anthropic, Voyage, and live Lichess HTTP
-# calls per turn.
-#
-# Sized against the work this task actually takes, not against how simple it
-# sounds. The shortest path that produces anything is already five turns --
-# search studies, list one study's chapters, record it, find a corpus game,
-# record that -- and the model realistically lists chapters for several
-# studies before choosing one, since the chapter names are the only way to
-# tell which study is actually on topic. A ceiling of 6 left no room for any
-# of that: the loop was spending every turn exploring and getting cut off
-# before it ever called a recommend_* tool, so the feature returned nothing
-# at all for ordinary questions. Headroom here is cheap -- each turn is one
-# small, capped request -- and running out produces silence rather than a
-# visible error, which is the expensive failure.
+# Caps tool-calling turns per lookup (each turn is a paid call). The
+# shortest useful lookup is five turns (search, list chapters, recommend,
+# find a game, recommend), and the model usually lists chapters for several
+# studies first, so the cap leaves room for that; running out returns
+# nothing at all.
 MAX_AGENT_TURNS = 14
 
 SYSTEM_PROMPT = """You help decide whether any external resources are worth \
@@ -86,7 +64,7 @@ each resource you've decided is genuinely worth showing, with a one or two \
 sentence blurb explaining why it's relevant to the question.
 
 Recommending nothing is a valid and often correct outcome. Only recommend a \
-resource that is specifically relevant to this question -- do not call \
+resource that is specifically relevant to this question; do not call \
 recommend_* just to fill a quota. Never recommend a study or game you have \
 not looked up with a tool in this turn.
 """
@@ -117,12 +95,8 @@ Recommendation = LichessStudyRecommendation | ChessbaseGameRecommendation
 
 @dataclass
 class _SessionState:
-    """Metadata gathered during one recommendation turn, keyed by id, so
-    the final recommend_* tool calls only need to pass an id and a blurb --
-    everything else needed to build the final Recommendation objects was
-    already fetched by an earlier tool call in the same turn and doesn't
-    need to be re-requested from the model or re-fetched from the DB/API.
-    """
+    """What the lookup's tools have fetched, keyed by id, so a recommend_*
+    call only needs an id and a blurb."""
 
     studies_by_id: dict[str, str] = field(default_factory=dict)  # id -> title
     # study_id -> {chapter_id: name}
@@ -165,15 +139,8 @@ def build_tools(
         Args:
             study_id: A study id from search_lichess_studies results.
         """
-        # http_client/pacer threaded through from recommend_resources, not
-        # left to fetch_study_chapters' own per-call defaults -- this is
-        # the one live, user-facing Lichess call in the whole codebase
-        # that used to skip RequestPacer entirely (a fresh, unpaced
-        # pacer/client was spun up and thrown away every single call), the
-        # opposite of the courtesy the offline scripts already share
-        # correctly. See src.ui.resources.get_lichess_http_client/
-        # get_lichess_pacer for the process-wide instances chat.py passes
-        # in here.
+        # The shared client and pacer from recommend_resources, so requests
+        # to Lichess are spaced out across every visitor's lookups.
         chapters = fetch_study_chapters(study_id, http_client=http_client, pacer=pacer)
         if not chapters:
             return f"No chapters found for study {study_id}."
@@ -215,7 +182,7 @@ def build_tools(
         chapter_name = state.chapters_by_study_id.get(study_id, {}).get(chapter_id)
         if title is None or chapter_name is None:
             return (
-                "Unknown study_id/chapter_id combination -- look it up with "
+                "Unknown study_id/chapter_id combination. Look it up with "
                 "search_lichess_studies and get_lichess_study_chapters first."
             )
         state.recommendations.append(
@@ -240,7 +207,7 @@ def build_tools(
         """
         candidate = state.games_by_id.get(game_id)
         if candidate is None:
-            return "Unknown game_id -- look it up with find_chessbase_game first."
+            return "Unknown game_id. Look it up with find_chessbase_game first."
         pgn = query_with_retry(db_pool, game_moves_as_pgn, game_id)
         if pgn is None:
             return f"Could not load moves for game {game_id}."
@@ -273,22 +240,18 @@ def recommend_resources(
     http_client: httpx.Client | None = None,
     pacer: RequestPacer | None = None,
 ) -> list[Recommendation]:
-    """Decide which, if any, external resources to recommend alongside an
-    answer to `question`. Returns an empty list if nothing was relevant
-    enough to recommend -- a valid, expected outcome, not a failure.
+    """Decide which resources, if any, to recommend alongside an answer to
+    `question`. An empty list means nothing was relevant enough.
 
-    http_client/pacer, like client/db_pool/voyage_client, are meant to be
-    the caller's own shared, long-lived instances (see
-    src.ui.resources.get_lichess_http_client/get_lichess_pacer) -- passed
-    through to get_lichess_study_chapters so Lichess request pacing
-    actually accumulates across calls instead of resetting every time.
+    The clients and pacer should be the caller's long-lived shared instances
+    (see src.ui.resources), so Lichess request pacing holds across calls.
     """
     client = client or anthropic.Anthropic()
     state = _SessionState()
     tools = build_tools(db_pool, voyage_client, state, http_client=http_client, pacer=pacer)
 
     runner = client.beta.messages.tool_runner(
-        model=MODEL,
+        model=CLAUDE_MODEL,
         max_tokens=MAX_TOKENS,
         system=SYSTEM_PROMPT,
         tools=tools,
@@ -301,14 +264,11 @@ def recommend_resources(
     for _ in runner:
         turns += 1
 
-    # An empty result is a legitimate answer -- often nothing in the pool is
-    # a close enough match -- and the UI says so. But it reads identically to
-    # the loop being cut off mid-search before it recorded anything, which is
-    # a bug and not something the user should be told was "no close match".
-    # Logged so the two are distinguishable without reproducing by hand.
+    # An empty result usually means no close match, but it is also what a
+    # lookup cut off by the turn cap returns. Logged to tell the two apart.
     if turns >= MAX_AGENT_TURNS and not state.recommendations:
         logger.warning(
-            "Recommendation lookup hit the %d-turn ceiling with nothing recorded -- "
+            "Recommendation lookup hit the %d-turn ceiling with nothing recorded: "
             "the model ran out of turns while searching rather than finding no match.",
             MAX_AGENT_TURNS,
         )

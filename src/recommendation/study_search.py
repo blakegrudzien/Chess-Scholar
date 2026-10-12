@@ -10,7 +10,8 @@ from dataclasses import dataclass
 
 import psycopg2.extensions
 import voyageai
-from pgvector.psycopg2 import register_vector
+
+from src.rag.vector_search import ensure_vector_type
 
 
 @dataclass
@@ -32,7 +33,7 @@ def search_studies(
     """Return the `limit` recommendable studies most semantically similar
     to `query`, nearest first.
     """
-    register_vector(conn)
+    ensure_vector_type(conn)
     result = client.embed([query], model=model, input_type="query")
     query_vector = result.embeddings[0]
 

@@ -1,16 +1,26 @@
-"""Layer 2 query-time semantic search: embed a natural-language query via
-Voyage AI and rank chunks by pgvector cosine distance. The write-side of
-this pipeline (populating chunks.embedding) lives in
-src/embeddings/voyage_embedder.py -- this module is read-only.
+"""Layer 2 search: embed a question with Voyage AI and rank chunks by
+pgvector cosine distance. Embeddings are written by
+src/embeddings/voyage_embedder.py.
 """
 
 from __future__ import annotations
 
+import weakref
 from dataclasses import dataclass
 
 import psycopg2.extensions
 import voyageai
 from pgvector.psycopg2 import register_vector
+
+# Connections that already know the vector type. register_vector queries the
+# database, and pooled connections are reused, so it runs once per connection.
+_vector_registered: weakref.WeakSet = weakref.WeakSet()
+
+
+def ensure_vector_type(conn: psycopg2.extensions.connection) -> None:
+    if conn not in _vector_registered:
+        register_vector(conn)
+        _vector_registered.add(conn)
 
 
 @dataclass
@@ -33,7 +43,7 @@ def search_chunks(
     limit: int = 5,
 ) -> list[ChunkResult]:
     """Return the `limit` chunks most semantically similar to `query`."""
-    register_vector(conn)
+    ensure_vector_type(conn)
     result = client.embed([query], model=model, input_type="query")
     query_vector = result.embeddings[0]
 

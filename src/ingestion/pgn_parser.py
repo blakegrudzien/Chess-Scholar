@@ -50,22 +50,13 @@ class GameRecord:
     result: str | None
     source: str
     moves: list[MoveRecord] = field(default_factory=list)
-    # How many movetext errors python-chess reported while reading this
-    # game. Non-zero means the game was truncated at the first bad move and
-    # `moves` holds only the prefix that parsed. Ingestion doesn't act on
-    # this -- a corpus export is trusted -- but an uploaded file is not, and
-    # the UI needs to be able to tell the user their game was cut short
-    # rather than silently analyzing a fragment of it.
+    # Movetext errors python-chess reported. Non-zero means `moves` stops at
+    # the first bad move; the UI tells the uploader their game was cut short.
     parse_errors: int = 0
 
 
-# Modern chess rules (as opposed to earlier regional variants) date to
-# roughly 1475 -- 1400 is a round, generously early floor that will never
-# false-reject a real historical game while still catching an obviously
-# truncated/malformed header like "202.01.01" (year_str="202", which
-# .isdigit() alone accepts fine, silently becoming year=202 downstream and
-# polluting games.year/chunks.year with a value trend synthesis would
-# treat as legitimate).
+# Modern chess rules date to about 1475, so no real game predates 1400; a
+# malformed date like "202.01.01" would otherwise become the year 202.
 MIN_PLAUSIBLE_YEAR = 1400
 
 
@@ -76,10 +67,7 @@ def parse_year(date_header: str | None) -> int | None:
     if not year_str.isdigit():
         return None
     year = int(year_str)
-    # Upper bound computed at call time, not a hardcoded constant that
-    # would need bumping every year (and would reject real recent games
-    # once stale) -- a small future slack (+1) covers a game dated in a
-    # different timezone than wherever this happens to run.
+    # Computed at call time so it never goes stale; +1 allows for time zones.
     if not (MIN_PLAUSIBLE_YEAR <= year <= datetime.now(UTC).year + 1):
         return None
     return year
@@ -130,34 +118,19 @@ def _material_delta(board: chess.Board, move: chess.Move) -> int:
 def parse_game(
     game: chess.pgn.Game, source: str, *, truncate_at_repetition: bool = False
 ) -> GameRecord:
-    """truncate_at_repetition stops recording moves once a position has
-    occurred for the third time -- off by default (a real historical game
-    can play on past a repeated position instead of claiming the draw, and
-    ingestion must keep that data intact), on for untrusted user uploads
-    (chat.py), where it bounds an adversarial PGN that shuffles pieces back
-    and forth to inflate move count without ever needing an explicit cap.
+    """truncate_at_repetition stops at a position's third occurrence. Off for
+    ingestion, where real games can play on past a repetition; on for user
+    uploads, so a crafted PGN can't shuffle pieces to make a huge move list.
     """
     headers = game.headers
     moves: list[MoveRecord] = []
 
     board = game.board()
     for ply, move in enumerate(game.mainline_moves(), start=1):
-        # python-chess's PGN parser is lenient about malformed movetext -- a
-        # mainline move can parse fine while still not being legal in the
-        # position actually reached, and board.san() raises an
-        # AssertionError for that internally (observed in practice against
-        # a broader, less-curated slice of scraped PGN -- see
-        # annotation_extractor.py's iter_plies_with_comments, which hit the
-        # identical problem and was fixed the same way). This function is
-        # that bug's untrusted-input-reachable twin: chat.py calls it
-        # directly on a user-uploaded PGN with no legality guarantee at
-        # all, so the fix belongs here too, not just in the batch-ingestion
-        # path. Stop at the first illegal move rather than crash -- a
-        # truncated-but-valid game is a far better outcome than an
-        # unhandled exception. Checked before calling board.san() (which
-        # raises internally for exactly this) rather than catching that
-        # error: an assert is not a contract to depend on -- see
-        # hash_utils.check_no_delimiter's own docstring on the same point.
+        # python-chess can parse a mainline move that isn't legal in the
+        # position reached, and board.san() then fails with an assertion.
+        # User uploads reach this, so stop at the first illegal move,
+        # checked explicitly rather than by catching the assertion.
         if move not in board.legal_moves:
             break
         # SAN, capture info, and material delta all depend on the position

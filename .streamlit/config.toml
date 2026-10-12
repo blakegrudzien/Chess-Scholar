@@ -1,23 +1,12 @@
-# This app has no auth and is deployed on a public URL -- an uncaught
-# exception should never hand an anonymous visitor a full Python traceback
-# (exception type, message, file paths, library internals). Streamlit's own
-# default for this is "full"; logs (stdout/stderr, captured by Streamlit
-# Cloud's own log viewer -- see app.py's logging.basicConfig comment) still
-# get the complete picture either way, so nothing is lost for debugging.
+# A public app should never show visitors a Python traceback (file paths,
+# library internals). Full errors still reach the logs.
 [client]
 showErrorDetails = "none"
 
-# Visual identity: walnut, oxblood, and parchment -- a chess study, not a
-# SaaS dashboard. See scripts/init_db.sql-adjacent design notes (or the
-# published specimen) for the full rationale behind these values.
+# Walnut, oxblood and parchment: a chess study, not a SaaS dashboard.
 #
-# secondaryBackgroundColor stays a light parchment tint deliberately, not the
-# dark walnut tone used elsewhere: Streamlit applies the single global
-# textColor (dark) to anything sitting on secondaryBackgroundColor, and there
-# is no separate "secondary text color" option to pair with it -- setting it
-# dark here would put dark text on a dark background. The one place a genuine
-# dark panel (code/PGN blocks) is wanted, codeBackgroundColor/codeTextColor
-# is the option Streamlit actually built for that pairing, used below instead.
+# secondaryBackgroundColor stays light because Streamlit uses the one dark
+# textColor on it; dark panels (code and PGN blocks) use the code colors.
 [theme]
 base = "light"
 primaryColor = "#6B1E2B"

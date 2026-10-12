@@ -1,8 +1,7 @@
-"""Layer 1 -- deterministic structured search over games/moves
-(scripts/init_db.sql). python-chess-shaped data queried via raw SQL, no LLM
-judgment involved: move/position/pattern queries and statistical aggregation,
-e.g. "where does the knight usually land in this ECO code" -- the stats half
-of the flagship opening-profile demo (paired with Layer 2 prose about plans).
+"""Layer 1: deterministic SQL over the games and moves tables, with no LLM
+involved. Statistics like "where does the knight usually land in this
+opening", the numbers half of an opening profile (Layer 2 supplies the
+plans).
 """
 
 from __future__ import annotations
@@ -123,11 +122,8 @@ def piece_placement_frequency(
     Restricted to the first `max_ply` half-moves (the opening phase) unless
     max_ply is None, in which case the whole game is considered.
     """
-    # piece_clause is one of three literal fragments chosen by
-    # _piece_match_clause, which rejects any piece outside _VALID_PIECES and
-    # any color outside the three it knows before returning. The caller's
-    # own values are never interpolated -- they come back as piece_value and
-    # are bound below -- so nothing user-controlled reaches the query text.
+    # piece_clause is one of three fixed SQL fragments; the caller's values
+    # are only ever bound as parameters, never put in the query text.
     piece_clause, piece_value = _piece_match_clause(piece, color)
     query = f"""
         SELECT m.to_sq, count(*) AS cnt
@@ -139,7 +135,7 @@ def piece_placement_frequency(
         GROUP BY m.to_sq
         ORDER BY cnt DESC, m.to_sq
         LIMIT %s
-    """  # noqa: S608 -- piece_clause is a validated literal, see above
+    """  # noqa: S608 (piece_clause is a fixed fragment, see above)
     with conn.cursor() as cur:
         cur.execute(query, (eco_code, piece_value, max_ply, max_ply, limit))
         rows = cur.fetchall()
@@ -172,25 +168,13 @@ def common_moves_at_ply(
 def select_narrative_game(
     conn: psycopg2.extensions.connection, eco_codes: list[str]
 ) -> NarrativeGameCandidate | None:
-    """Pick one ChessBase-sourced game to show, moves only, for the
-    "narrative" lane of the study recommendation feature -- a different
-    source than the other two recommendation lanes (drill/concept), which
-    draw from the Lichess-backed quality-classifier cascade. This lane
-    instead draws from the corpus's own already-curated master games,
-    stripped down to just the moves (see game_moves_as_pgn): a game's move
-    sequence is historical fact, not the copyrightable part of a ChessBase
-    export, so nothing here needs the classifier pipeline's licensing care.
+    """Pick one ChessBase master game in one of `eco_codes` to recommend,
+    shown as moves only: a game's moves are historical fact, not the
+    licensed part of the export.
 
-    Restricted to source = 'chessbase': that's this project's only source
-    of GM-level annotated games (see CLAUDE.md). Rows with source =
-    'lichess' in the same table are raw volume data for Layer 1 stats, not
-    necessarily GM games, and aren't what this lane is for.
-
-    Among games matching any of eco_codes, prefers the one with the most
-    game_annotation chunks originally attached: the original annotator
-    judging a game worth explaining at length is a real notability signal,
-    even though none of that text is ever shown here -- only the moves are.
-    Returns None if no chessbase game matches any of the given codes.
+    Prefers the game with the most annotation chunks, since an annotator
+    writing at length marks a notable game (the annotations themselves are
+    never shown). Returns None if no game matches.
     """
     if not eco_codes:
         raise ValueError("eco_codes must be non-empty")
@@ -227,18 +211,9 @@ def select_narrative_game(
 
 
 def game_moves_as_pgn(conn: psycopg2.extensions.connection, game_id: str) -> str | None:
-    """Reconstruct a complete, valid PGN document for one game directly
-    from games + moves: headers plus movetext in SAN, deliberately no
-    comments or NAGs. That's true by construction, not just by omission --
-    moves has no annotation column at all (annotations live only in
-    chunks, a separate table this never touches), so there's nothing to
-    accidentally include.
-
-    Built via chess.pgn.Game and python-chess's own serializer rather than
-    formatting header strings by hand, so header values are escaped
-    correctly (e.g. a player name containing a quote character) instead of
-    risking malformed PGN from a naive f-string.
-
+    """Rebuild one game as PGN from the games and moves tables: headers and
+    moves only. The moves table has no annotations, so none can leak in.
+    Uses python-chess's serializer so header values are escaped properly.
     Returns None if game_id doesn't exist.
     """
     with conn.cursor() as cur:

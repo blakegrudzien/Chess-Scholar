@@ -3,25 +3,14 @@ candidate's structural features (feature_extraction.py), predict how
 likely a human labeler would be to mark it "recommend" rather than
 "reject."
 
-Scope note: trained only on drill/concept-genre labels, not narrative.
-Every one of the 21 narrative-genre labels in study_labels.jsonl came back
-"reject" -- Lichess narrative studies turned out not to be worth
-recommending at all, which is exactly why the narrative lane now draws a
-plain-moves ChessBase game instead (see structured_search.select_narrative_
-game). Training on an all-reject genre this classifier will never be asked
-to score again would just teach it a pattern that has no bearing on its
-actual job at inference time -- a textbook train/serve skew, avoided by
-excluding it up front rather than filtering it out later.
+Trained on drill and concept studies only. All 21 narrative-genre labels
+were "reject", and narrative recommendations come from ChessBase games
+instead (structured_search.select_narrative_game), so training on that
+genre would only teach a pattern the model is never used for.
 
-Classical ML (logistic regression, gradient-boosted trees), not anything
-deep: the labeled set here is small -- on the order of a couple hundred
-examples after excluding narrative and skips (see models/quality_classifier.
-meta.json's n_examples for the exact count behind the currently-committed
-model, not a number here that goes stale as more labels get added) --
-hand-labeled by one person. Model capacity should track the data available,
-not the data one might wish for; a small, regularized classical model is the
-amount of capacity this little data can actually support without just
-memorizing it.
+Classical models (logistic regression, gradient-boosted trees) because the
+data is small: a couple of hundred examples labeled by one person (the
+exact count is n_examples in models/quality_classifier.meta.json).
 """
 
 from __future__ import annotations
@@ -47,16 +36,11 @@ from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
 from src.recommendation.feature_extraction import FEATURE_NAMES, StudyFeatures, extract_features
 
-# Genres this classifier is trained on and will ever be asked to score.
-# Narrative is excluded -- see module docstring.
+# The genres the classifier scores (narrative excluded, see module docstring).
 TRAINED_GENRES = frozenset({"drill", "concept"})
 
-# Count-like features are right-skewed (a handful of very long, very
-# heavily-annotated studies dominate the raw scale) -- log1p first so a
-# linear model's regularization penalty and a tree model's split thresholds
-# both see a roughly symmetric distribution instead of a few outliers
-# dominating the scale. comment_density is already a bounded ratio and
-# has_pre_game_comment is already binary, so both skip the transform.
+# Counts are right-skewed by a few huge studies, so they get log1p.
+# comment_density (a ratio) and has_pre_game_comment (binary) don't.
 _LOG_TRANSFORM_FEATURES = [
     "num_chapters",
     "total_plies",
@@ -71,23 +55,14 @@ _LOG_TRANSFORM_FEATURES = [
 _LOG_TRANSFORM_INDICES = [FEATURE_NAMES.index(name) for name in _LOG_TRANSFORM_FEATURES]
 _PASSTHROUGH_INDICES = [i for i in range(len(FEATURE_NAMES)) if i not in _LOG_TRANSFORM_INDICES]
 
-# Minimums before a genre/phase-broken-out metric is reported at all,
-# mirroring CLAUDE.md's rule for trend synthesis: don't claim a pattern
-# exists from a handful of examples. Two guards, not one: total group size
-# alone isn't enough -- a 37-example group with only 2 examples of one
-# class still passes a size-10 threshold, but its ROC-AUC is then computed
-# from just those 2 examples' relative ranking and is nearly pure noise
-# (this happened for real: the "unknown"-phase group, all labels collected
-# before the phase field existed, is 35 recommend / 2 reject). Requiring a
-# minimum count of the minority class specifically catches that case a
-# total-size check alone misses.
+# Minimums before a per-genre or per-phase metric is reported. Group size
+# alone isn't enough: a 37-example group with 2 rejects passes a size check,
+# but its ROC-AUC rests on those 2 examples. The minority class needs a
+# minimum count too.
 MIN_GROUP_SIZE_FOR_METRICS = 10
 MIN_MINORITY_CLASS_SIZE_FOR_METRICS = 5
 
-# The classifier's decision boundary -- study_index.is_eligible_for_
-# recommendation uses this exact same value for its own quality gate
-# (imported from here, not re-declared) so the two were never independently
-# tunable literals kept in sync only by a comment asking nicely.
+# The decision boundary, also imported by study_index's eligibility check.
 DEFAULT_QUALITY_THRESHOLD = 0.5
 
 
@@ -126,7 +101,7 @@ def load_labeled_dataset(
             if candidate is None:
                 raise ValueError(
                     f"study_labels.jsonl references study_id "
-                    f"{label['study_id']!r}, which isn't in {candidates_path} -- "
+                    f"{label['study_id']!r}, which isn't in {candidates_path}: "
                     "a stale labels file, a hand-edited candidates file, or the "
                     "wrong path was passed?"
                 )
@@ -176,14 +151,9 @@ def build_pipeline(model: ClassifierMixin) -> Pipeline:
 def cross_validated_predictions(
     pipeline: Pipeline, x: np.ndarray, y: np.ndarray, *, n_splits: int = 5, random_state: int = 0
 ) -> np.ndarray:
-    """Out-of-fold predicted P(recommend) for every example, via stratified
-    k-fold: each example's prediction comes from a fold that never saw it
-    during fitting, so aggregating these across all folds gives an honest,
-    full-dataset estimate of generalization -- the standard way to get
-    per-subgroup (genre/phase) metrics out of cross-validation, rather than
-    trying to average per-fold-per-subgroup numbers computed on much
-    smaller slices.
-    """
+    """Out-of-fold P(recommend) for every example (stratified k-fold), so
+    each prediction comes from a model that never saw that example.
+    Per-genre and per-phase metrics are computed from these."""
     cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     return cross_val_predict(pipeline, x, y, cv=cv, method="predict_proba")[:, 1]
 
@@ -225,16 +195,9 @@ def breakdown_metrics(
     min_group_size: int = MIN_GROUP_SIZE_FOR_METRICS,
     min_minority_class_size: int = MIN_MINORITY_CLASS_SIZE_FOR_METRICS,
 ) -> dict[str, Metrics | None]:
-    """Metrics per distinct value in `groups` (e.g. genre or phase),
-    aligned index-for-index with y_true/y_proba. Two conditions gate
-    whether a group gets a real Metrics or None: total size, and minority
-    class size specifically -- a group can clear the size bar while one
-    class is still only 2 examples, which makes ROC-AUC in particular
-    almost pure noise (see MIN_MINORITY_CLASS_SIZE_FOR_METRICS). Reporting
-    a number in either case would overstate confidence the data doesn't
-    support -- the same reasoning CLAUDE.md already applies to trend
-    synthesis: require a minimum count before claiming a pattern.
-    """
+    """Metrics for each value in `groups` (e.g. genre or phase), aligned
+    with y_true/y_proba. A group too small overall, or with too few of its
+    minority class, gets None rather than a misleading number."""
     labels = ["unknown" if g is None else g for g in groups]
     result: dict[str, Metrics | None] = {}
     for label in sorted(set(labels)):

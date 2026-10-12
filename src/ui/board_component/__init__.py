@@ -80,10 +80,9 @@ def chess_board(
     key: str | None = None,
 ) -> dict[str, str] | None:
     """Render a board at `fen`, `size` pixels wide at most and narrower
-    when the screen is. Returns {"from": sq, "to": sq} for the drop
-    that just happened, or None if nothing new was dropped since the last
-    script run -- "drop" is a Streamlit trigger value (see wiring.js), so it
-    resets to None automatically after one rerun rather than replaying.
+    when the screen is. Returns {"from": sq, "to": sq} for a move made
+    since the last run, or None. "drop" is a trigger value, so it resets
+    after one rerun.
 
     Pass a `key` so the board persists across reruns: wiring.js then keeps
     the moves it drew itself and redraws only when `fen` differs from what
@@ -93,9 +92,8 @@ def chess_board(
     `fen` unchanged (its signal to put the pieces back).
 
     draggable=False makes the board read-only (game replay, and while an
-    answer generates). The Python caller should still check its own
-    replay-vs-free-play state before acting on a drop too, defense in depth
-    rather than trusting a single layer.
+    answer generates). Callers still check their own state before acting
+    on a move.
     """
     result = _chess_board_component(
         data={"fen": fen, "size": size, "generation": generation, "draggable": draggable},

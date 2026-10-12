@@ -1,12 +1,9 @@
 """Fail loudly if pyproject.toml's [project.dependencies] and the root
 requirements.txt have drifted apart.
 
-Two copies of the same dependency list exist only because Streamlit
-Community Cloud reads requirements.txt specifically and can't be pointed at
-pyproject.toml (see both files' own comments) -- pyproject.toml stays the
-source of truth for local dev. "Kept in sync by hand" has no enforcement
-without this: nothing previously caught the two silently drifting apart
-after a dependency change that only touched one file.
+The list exists twice because Streamlit Community Cloud reads only
+requirements.txt; pyproject.toml is the source of truth. This check keeps
+the two from drifting apart.
 
 Run directly, or via CI (see .github/workflows/ci.yml):
     python -m scripts.check_requirements_sync
@@ -35,9 +32,7 @@ def _requirements_txt_dependencies() -> set[str]:
 
 
 def check_sync() -> list[str]:
-    """Returns a list of human-readable mismatch descriptions -- empty if
-    the two files declare exactly the same dependency set.
-    """
+    """Descriptions of every mismatch; empty when the two files agree."""
     pyproject_deps = _pyproject_dependencies()
     requirements_deps = _requirements_txt_dependencies()
 
@@ -61,7 +56,7 @@ def main() -> None:
         print("pyproject.toml and requirements.txt have drifted apart:")
         for problem in problems:
             print(f"  - {problem}")
-        print("Update both -- see the comment at the top of either file.")
+        print("Update both; see the comment at the top of either file.")
         sys.exit(1)
     print("pyproject.toml and requirements.txt agree.")
 

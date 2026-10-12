@@ -1,14 +1,9 @@
-"""A quick guided tour, built as an st.components.v2 component -- spotlights
-six existing UI elements in turn with a short tooltip, launched from a
-single "How this works" button (see app.py's call site).
+"""The "How this works" tour: an st.components.v2 component that spotlights
+six parts of the page in turn, each with a short tooltip.
 
-isolate_styles=False is required, not a style choice: wiring.js appends its
-backdrop/spotlight/tooltip elements straight to document.body rather than to
-the parentElement Streamlit hands it (see that file's own comment for why a
-position: fixed overlay needs to live there instead), so a Shadow DOM around
-parentElement's subtree -- isolate_styles=True, the component default --
-would scope this file's CSS to a subtree those elements sit outside of, and
-none of it would apply to them at all.
+isolate_styles=False because wiring.js adds its overlay to document.body,
+outside the component's own element, where a shadow DOM would keep this
+CSS from reaching it.
 """
 
 from __future__ import annotations
@@ -29,17 +24,14 @@ _tutorial_component = st.components.v2.component(
     isolate_styles=False,
 )
 
-# Each selector targets the `st-key-<key>` CSS class Streamlit generates for
-# any widget or container given a `key=` (confirmed in the installed
-# Streamlit source, elements/layouts.py and elements/widgets/button.py),
-# except the chat input, which needs no key of its own -- it's the only
-# st.chat_input on the page, so its default data-testid is already unique.
+# Selectors use the `st-key-<key>` class Streamlit adds for a `key=`; the
+# chat input is the page's only one, so its data-testid is enough.
 _STEPS = [
     {
         "selector": ".st-key-chat_panel",
         "title": "Ask anything about chess",
         "text": (
-            "Openings, positions, strategy, history -- one chat handles "
+            "Openings, positions, strategy, history: one chat handles "
             "all of it and figures out what to draw on for each question. "
             "There's no mode to pick."
         ),
@@ -104,16 +96,11 @@ _PHONE_STEP_ORDER = [1, 2, 3, 4, 0, 5]
 
 
 def render_tutorial_trigger() -> None:
-    """A small "How this works" button that launches the tour.
+    """The "How this works" button and the tour it launches.
 
-    st.session_state.tutorial_launch_id is a counter, not a bool: this
-    component is unkeyed, so Streamlit remounts it (a fresh JS instance,
-    calling the previous one's cleanup first) only when its serialized
-    `data` payload changes -- the same mechanism chat.py's board_generation
-    counter relies on for chess_board(). A bool would stay True forever
-    after the first click, so a second click meant to reopen the tour after
-    closing it would send the same payload and never remount anything.
-    Incrementing on every click guarantees a new payload each time.
+    tutorial_launch_id counts clicks rather than being a flag: the
+    component restarts only when its data changes, so a flag would never
+    reopen the tour after the first time.
     """
     if "tutorial_launch_id" not in st.session_state:
         st.session_state.tutorial_launch_id = 0

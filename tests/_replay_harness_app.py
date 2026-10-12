@@ -1,21 +1,13 @@
-"""A minimal harness for test_board_component.py's game-replay tests --
-seeds st.session_state.game_path directly (a short, fixed 4-move game) so
-the read-only-board and Prev/Next behavior can be exercised in a real
-browser without needing a real recommend_resources() call (which needs
-live Anthropic/DB credentials and isn't guaranteed to recommend a
-Chessbase game for any given question).
-
-Not named test_*.py deliberately, so pytest doesn't try to collect this as
-a test module -- it's a Streamlit script, not a test file, and only makes
-sense run via `streamlit run`.
+"""A Streamlit app for test_board_component.py's replay tests: it seeds a
+fixed 4-move game into st.session_state.game_path, so replay can be tested
+without a real resource lookup. Not named test_*.py, so pytest doesn't
+collect it.
 """
 
 import sys
 from pathlib import Path
 
-# `streamlit run tests/_replay_harness_app.py` puts tests/ itself on
-# sys.path, not the project root -- same issue src/app.py's own comment
-# documents and works around, for the same reason.
+# `streamlit run` puts tests/ on sys.path, not the project root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import chess  # noqa: E402

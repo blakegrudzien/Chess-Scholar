@@ -26,19 +26,11 @@ class EngineBusyError(Exception):
 
 
 def _quit_all(engines: Iterable[chess.engine.SimpleEngine]) -> None:
-    """Quit each engine, continuing even if one fails to shut down cleanly.
+    """Quit every engine, carrying on past any that fail to shut down.
 
-    Deliberately broader than the rest of this codebase's error handling:
-    everywhere else, catching Exception and moving on would hide a real
-    bug. Here it is the correct behavior, not a shortcut, because the goal
-    of this function is "release as many engines as possible," and one
-    engine already being dead is exactly the kind of failure this needs to
-    survive to reach the rest. It's still worth knowing about, though, so
-    it's logged rather than silently discarded -- this module has no
-    __main__ entry point to call logging.basicConfig from, but a WARNING
-    still reaches stderr by default: Python's logging module falls back to
-    a "handler of last resort" for WARNING and above when nothing else has
-    configured one, specifically so warnings are never completely silent.
+    The broad except is deliberate: the aim is to release as many engines
+    as possible, and an already-dead engine shouldn't stop the rest. Each
+    failure is logged as a warning.
     """
     for engine in engines:
         try:
@@ -78,40 +70,24 @@ class EnginePool:
         try:
             yield engine
         except chess.engine.EngineTerminatedError:
-            # The subprocess itself died mid-use (crashed, was killed, hit
-            # an internal fault) -- unlike every other exception a caller's
-            # code might raise inside the `with` block, this one means the
-            # engine object is unusable now and forever. Returning it to
-            # the pool unconditionally would hand the same broken engine to
-            # the next checkout(), which fails identically on first use.
-            # Respawning a replacement keeps the pool's advertised capacity
-            # (self.size, quoted in EngineBusyError's message above) true
-            # rather than silently shrinking by one each time this happens.
+            # The engine process itself died, so it can't go back in the
+            # pool. A replacement keeps the pool at full size.
             logger.warning("Engine process terminated during use; respawning a replacement.")
             try:
                 self._available.put(chess.engine.SimpleEngine.popen_uci(self._engine_path))
             except Exception:
-                # A failed respawn is worse than the crash that triggered it:
-                # nothing goes back into _available, so the pool's real
-                # capacity is now permanently one below self.size (still
-                # quoted as the full size in EngineBusyError's message
-                # above) until the process restarts, with no other signal
-                # that this happened. ERROR, not WARNING -- this is a
-                # standing capacity loss for the rest of the process
-                # lifetime, not a one-off recovered hiccup.
+                # The pool stays one engine short until the app restarts,
+                # so this is logged as an error.
                 logger.error(
-                    "Failed to respawn a replacement engine after a crash -- "
+                    "Failed to respawn a replacement engine after a crash; "
                     "pool capacity permanently reduced by one (of %d) until the "
                     "process restarts.",
                     self.size,
                 )
             raise
         except Exception:
-            # Not an engine-health problem (a bad argument, a bug in the
-            # caller's own code) -- the process itself is still healthy,
-            # so return it normally before letting the caller's error
-            # propagate, the same distinction db_loader.query_with_retry
-            # draws between a dead connection and any other failure.
+            # The caller's error, not the engine's: return the engine
+            # before re-raising.
             self._available.put(engine)
             raise
         else:

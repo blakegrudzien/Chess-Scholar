@@ -1,22 +1,13 @@
-"""Builds the searchable pool of recommendable Lichess studies: which
-candidates are eligible to ever be surfaced, and what text represents each
-one for embedding similarity search.
+"""The searchable pool of Lichess studies: which candidates may be
+recommended, and the text embedded for each.
 
-Genre routing (originally planned as a separate heuristic step) was
-dropped in favor of this simpler design: rather than pre-classify every
-candidate as drill/concept/narrative with hand-tuned thresholds on noisy
-structural signals (real overlap exists -- e.g. 18 of 156 labeled "concept"
-studies are also single-chapter, the same shape a "narrative" study has),
-this reuses the project's existing Layer 2 pattern -- embed content, do
-similarity search against a question, let the LLM read what actually came
-back. The prose itself carries the genre distinction far more reliably
-than any cheap proxy a heuristic could compute from it.
+Studies are matched to questions by embedding similarity, as in Layer 2,
+rather than sorted into genres by hand-tuned rules: structural signals
+overlap too much (18 of 156 "concept" studies are single-chapter, like a
+narrative one), and the text itself says what a study is about.
 
-Eligibility is a separate concern from the quality classifier's prediction
--- deliberately. A candidate can score well on predicted quality and still
-be unfit to recommend if almost nobody on Lichess has seen it. This module
-is the one place a candidate can fail to be recommendable for reasons
-other than "the classifier didn't like it."
+Eligibility is checked here, separately from the quality classifier: a
+well-scored study can still be too obscure to recommend.
 """
 
 from __future__ import annotations
@@ -25,22 +16,14 @@ from src.ingestion.annotation_extractor import extract_chapter_comment_text
 from src.recommendation.quality_classifier import DEFAULT_QUALITY_THRESHOLD
 from src.recommendation.study_pgn import iter_study_chapters
 
-# A hard floor independent of the quality classifier's own judgment: even a
-# candidate the model scores well is an unvetted, essentially unknown
-# resource below this many likes -- almost nobody has seen it, so
-# recommending it is a different kind of risk than the classifier's
-# accuracy addresses. Set at 20 knowing this excludes 4 studies already
-# hand-labeled "recommend" in the training data (10, 12, 14, 16 likes) --
-# a deliberate choice: what's good enough to keep in *training*
-# (more labeled examples, including low-like ones, made the classifier
-# more honest) doesn't have to be good enough to *serve*, since serving
-# carries a different risk than training does.
+# A likes floor independent of the classifier: below it, almost nobody has
+# vetted a study, however well it scores. It excludes 4 studies labeled
+# "recommend" in training (10-16 likes); they still help train the model,
+# but serving one is a different risk.
 MIN_LIKES_FOR_RECOMMENDATION = 20
 
-# Annotation text is embedded up to this many characters -- long enough to
-# capture what a study actually teaches, short enough to keep embedding
-# calls cheap and avoid diluting the vector with a full multi-chapter essay
-# dominated by whichever chapter happens to be longest.
+# Enough annotation text to capture what a study teaches, without one long
+# chapter dominating the embedding.
 MAX_ANNOTATION_CHARS_FOR_EMBEDDING = 2000
 
 
@@ -50,9 +33,8 @@ def is_eligible_for_recommendation(
     *,
     quality_threshold: float = DEFAULT_QUALITY_THRESHOLD,
 ) -> bool:
-    """Whether a candidate may ever be surfaced as a recommendation --
-    both the likes floor and the quality bar must clear, independently.
-    """
+    """Whether a candidate may be recommended: it must clear both the likes
+    floor and the quality threshold."""
     return likes >= MIN_LIKES_FOR_RECOMMENDATION and quality_probability >= quality_threshold
 
 

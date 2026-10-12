@@ -8,10 +8,8 @@ Inserts are idempotent:
 - chunks has no natural key otherwise (chunk_id is a bare SERIAL), so chunk
   rows are keyed on chunk_hash, a content hash computed here.
 
-Inserts are batched (flushed + committed every GAMES_BATCH_SIZE games /
-CHUNKS_BATCH_SIZE chunks) rather than materializing an entire large PGN file's
-rows in memory before one insert -- a single ChessBase export can be
-hundreds of thousands of games/chunks.
+Inserts are committed in batches (GAMES_BATCH_SIZE games, CHUNKS_BATCH_SIZE
+chunks), since one ChessBase export can hold hundreds of thousands of rows.
 """
 
 from __future__ import annotations
@@ -35,10 +33,6 @@ from src.ingestion.annotation_extractor import AnnotationChunk, extract_annotati
 from src.ingestion.hash_utils import ID_DELIMITER, check_no_delimiter
 from src.ingestion.pgn_parser import GameRecord, parse_pgn
 
-# getLogger(__name__), not the root logger: log records carry this module's
-# dotted path, so anything consuming these logs can tell where a message
-# came from, and can configure this module's verbosity independently of
-# every other module's.
 logger = logging.getLogger(__name__)
 
 GAMES_INSERT = """
@@ -80,18 +74,15 @@ def _neon_connect_kwargs(database_url: str) -> dict[str, str]:
 
 
 def get_connection() -> psycopg2.extensions.connection:
-    # override=True: .env must win over anything already in os.environ, since
-    # Streamlit auto-loads .streamlit/secrets.toml into the environment before
-    # this runs (see get_engine_path in stockfish_eval.py for the full story).
-    # No effect in deployment, where .env doesn't exist -- nothing to override.
+    # override=True: locally, .env must win over values Streamlit loads from
+    # .streamlit/secrets.toml (see get_engine_path in stockfish_eval.py).
     load_dotenv(override=True)
     database_url = os.environ["DATABASE_URL"]
     return psycopg2.connect(database_url, **_neon_connect_kwargs(database_url))
 
 
-# Sized for a handful of concurrent Streamlit sessions. DB round-trips here
-# are fast (indexed lookups), so this pool exists to stop concurrent sessions
-# serializing on one shared connection -- not because queries are slow.
+# Enough for a handful of concurrent sessions; queries are fast, so the pool
+# exists to keep sessions from sharing one connection.
 DB_POOL_MIN_CONN = 2
 DB_POOL_MAX_CONN = 10
 
@@ -191,12 +182,9 @@ class DatabaseBusyError(Exception):
     """
 
 
-# psycopg2's pool has no built-in wait/timeout option: getconn() either
-# returns a connection immediately or raises PoolError right away. A DB
-# checkout is fast and cheap (unlike a Stockfish search, which pins a CPU
-# core for the whole request), so a caller arriving a moment after the pool
-# was momentarily exhausted is likely to succeed if it just waits briefly --
-# worth doing here in a way it wouldn't be worth doing for the engine pool.
+# psycopg2's getconn() fails at once when the pool is empty. Connections free
+# up quickly (unlike engines, which are busy for a whole search), so callers
+# wait briefly instead.
 DB_POOL_CHECKOUT_TIMEOUT_SECONDS = 2.0
 DB_POOL_CHECKOUT_POLL_INTERVAL_SECONDS = 0.05
 
@@ -222,23 +210,15 @@ def get_connection_with_timeout(
 
 DB_RETRYABLE_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
 
-# Original attempt plus one retry on a dropped connection. Named rather than
-# inlined as a bare 2, so the retry budget is a single, intentional value
-# instead of a number a reader has to infer the meaning of.
+# The first attempt plus one retry on a dropped connection.
 MAX_QUERY_ATTEMPTS = 2
 
 
 def query_with_retry(db_pool: psycopg2.pool.ThreadedConnectionPool, fn: Callable, *args, **kwargs):
-    """Run fn(conn, *args, **kwargs) with a connection checked out of
-    db_pool, retrying once on a dropped connection (Neon closes idle
-    connections in practice) instead of failing the first caller unlucky
-    enough to hit one. On success or a non-retryable error, the connection
-    is returned to the pool normally; on a retryable error it's discarded
-    (close=True) rather than returned, since a connection that just failed
-    isn't healthy for the next caller to draw either.
-
-    Shared by chess_agent.build_tools and src.recommendation.pipeline's
-    DB-backed tools, so this retry behavior lives in exactly one place.
+    """Run fn(conn, *args, **kwargs) with a pooled connection, retrying once
+    with another connection if the first has dropped. A connection that
+    failed is closed rather than returned to the pool. Used by every
+    database-backed agent tool.
     """
     conn = get_connection_with_timeout(db_pool)
     last_error: Exception | None = None
@@ -253,16 +233,13 @@ def query_with_retry(db_pool: psycopg2.pool.ThreadedConnectionPool, fn: Callable
             conn = get_connection_with_timeout(db_pool)
             continue
         except Exception:
-            # Not a connection problem, so the connection itself is still
-            # healthy: return it normally before letting the caller's
-            # error (e.g. a bad argument) propagate.
+            # Not a connection problem: the connection is fine to reuse.
             db_pool.putconn(conn)
             raise
         else:
             db_pool.putconn(conn)
-            # A recovered retry is invisible to the user, so this line is the
-            # only record that a pooled connection had died. The original
-            # error text separates a stale connection from an unreachable DB.
+            # The only record that a pooled connection had died; the error
+            # text tells a stale connection from an unreachable database.
             if attempt > 0:
                 logger.warning(
                     "%s succeeded on attempt %d after a dropped connection: %s",
@@ -271,12 +248,8 @@ def query_with_retry(db_pool: psycopg2.pool.ThreadedConnectionPool, fn: Callable
                     str(last_error).strip(),
                 )
             return result
-    # Every iteration above ends in return or raise (the last attempt's
-    # except clause always raises instead of looping again), so this is
-    # unreachable. Stated explicitly rather than left as an implicit gap:
-    # it tells a type checker (and a future reader who changes
-    # MAX_QUERY_ATTEMPTS) that falling out of the loop is a bug, not a
-    # valid path returning None.
+    # Unreachable: every attempt returns or raises. Stated so a type checker
+    # doesn't see an implicit None return.
     raise AssertionError("unreachable: every query_with_retry attempt returns or raises")
 
 
@@ -296,9 +269,8 @@ def load_games(
         nonlocal games_inserted, moves_inserted, game_rows, move_rows
         with conn.cursor() as cur:
             if game_rows:
-                # page_size=len(rows): without this, execute_values silently
-                # sub-pages in groups of 100, and cur.rowcount afterward only
-                # reflects the *last* internal page, not the true total.
+                # One page, or cur.rowcount only counts execute_values' last
+                # internal page of 100.
                 execute_values(cur, GAMES_INSERT, game_rows, page_size=len(game_rows))
                 games_inserted += cur.rowcount
             if move_rows:
@@ -359,25 +331,12 @@ def _chunk_hash(chunk: AnnotationChunk) -> str:
 
 
 def load_chunks(chunks: Iterable[AnnotationChunk], conn: psycopg2.extensions.connection) -> int:
-    """Insert annotation/book chunks, flushing every CHUNKS_BATCH_SIZE chunks.
-    Returns the number of rows actually inserted (rows skipped by ON CONFLICT
-    don't count, and neither do rows skipped for a missing year -- see below).
+    """Insert annotation chunks in batches of CHUNKS_BATCH_SIZE. Returns the
+    number of rows inserted; duplicates and undated chunks don't count.
 
-    chunks.year is NOT NULL (scripts/init_db.sql, "required for trend
-    synthesis, do not skip") -- but AnnotationChunk.year is `int | None`,
-    because pgn_parser.parse_year legitimately returns None for a header
-    ChessBase itself writes when a game's date is unknown
-    ("????.??.??" is ChessBase's own placeholder, not malformed data).
-    That's routine in a real export, not a corner case: without a filter
-    here, the first such chunk aborts the whole in-flight transaction
-    (a NOT NULL violation kills it, and CHUNKS_BATCH_SIZE=5000 chunks can
-    be sitting unflushed at that point), silently discarding every chunk
-    since the last commit, not just the bad one. Skipping (and counting)
-    undated chunks keeps the schema's real invariant intact -- every row
-    that lands in the table still has a trustworthy year -- rather than
-    weakening the constraint to NULL-able and pushing the "is this year
-    trustworthy" question onto every future reader of the table, trend
-    synthesis included.
+    chunks.year is NOT NULL (trend synthesis needs it), but ChessBase marks
+    unknown dates "????.??.??", which parses to None. Undated chunks are
+    skipped and counted: one would otherwise fail the whole unflushed batch.
     """
     chunks_inserted = 0
     chunks_skipped_missing_year = 0
@@ -458,11 +417,8 @@ def _main() -> None:
 
 
 if __name__ == "__main__":
-    # basicConfig belongs here, not at module level: it's a global side
-    # effect (it configures the root logger's handlers), so only the
-    # script entry point should trigger it. A module that configures
-    # logging as a side effect of being imported would surprise (and
-    # override the choices of) whatever imports it.
+    # Configured here, not at import, so importing the module never changes
+    # the caller's logging.
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )

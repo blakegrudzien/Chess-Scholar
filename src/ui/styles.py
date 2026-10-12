@@ -1,11 +1,5 @@
-"""Page-wide visual identity that .streamlit/config.toml can't express on
-its own, plus the noindex tag. Applied once, at import time from app.py,
-before any content renders.
-
-The stylesheet itself lives in theme.css rather than in a Python string.
-That keeps it lintable and editable as CSS -- with real syntax
-highlighting, and visible to any CSS tooling -- instead of being opaque
-text that only Streamlit ever parses.
+"""Page styling that .streamlit/config.toml can't express, plus a noindex
+tag. The CSS lives in theme.css so it can be edited and linted as CSS.
 """
 
 from __future__ import annotations
@@ -23,13 +17,9 @@ def apply_global_styles() -> None:
 
 
 def _apply_noindex_tag() -> None:
-    # Portfolio demo backed by a personal ChessBase export; keep it out of
-    # search engine indexes rather than relying on the URL being merely
-    # unlisted. st.markdown's unsafe_allow_html doesn't execute <script>
-    # tags (React sets innerHTML), so this goes through st.html's explicit
-    # script-execution opt-in instead, rendered inside a sandboxed iframe
-    # nested one level inside Streamlit's own app frame -- window.top (not
-    # window.parent) is needed to reach the real top document.
+    # Keeps the demo out of search engines. st.html must opt in to run
+    # scripts, and its frame sits one level inside the app's, hence
+    # window.top.
     st.html(
         """<script>
         var meta = window.top.document.createElement('meta');

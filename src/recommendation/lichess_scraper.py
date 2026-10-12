@@ -1,24 +1,15 @@
-"""Scraper for Lichess's study *listing* pages -- lichess.org/study/all/{sort}.
+"""Scraper for Lichess's study listing pages (lichess.org/study/all/{sort})
+and study pages.
 
-Unlike lichess_client.py, this has no documented contract: it parses
-server-rendered HTML that Lichess could restructure at any time without
-notice. It exists only because there is no API for what it does. Lichess's
-own OpenAPI spec has no "list/search studies by popularity" endpoint, only
-per-user listing (lichess_client.iter_studies_by_username) and per-id fetch
-(lichess_client.fetch_study_pgn) -- neither of which can answer "what are
-the most-liked studies on the whole site right now."
+The API can list one user's studies or fetch one by id, but can't list the
+most popular studies site-wide or give chapter ids, so this reads the
+server-rendered HTML instead. It has no documented contract and can break
+when Lichess changes its markup, which is why it lives apart from
+lichess_client: finding no cards most likely means the markup changed.
 
-Kept in its own module, not folded into lichess_client, so the reliability
-boundary is visible at the import line: code that imports lichess_client is
-talking to a stable, documented API; code that imports this module is
-parsing a web page and should treat a failure to find any cards as "the
-site changed its markup," not "our request was malformed."
-
-Verified live against https://lichess.org/study/all/{popular,newest} on
-2026-08-30: each page renders up to STUDIES_PER_PAGE `div.study.paginated`
-cards server-side (confirmed via a plain curl, no JavaScript involved), and
-`?page=N` pages through them even though the live site itself uses infinite
-scroll for this same listing.
+Each listing page renders up to STUDIES_PER_PAGE `div.study.paginated`
+cards without JavaScript, and `?page=N` pages through them (checked
+2026-08-30).
 """
 
 from __future__ import annotations
@@ -35,9 +26,7 @@ from src.recommendation.lichess_client import RequestPacer, default_http_client
 
 logger = logging.getLogger(__name__)
 
-# The sort keys Lichess's own listing-page navigation actually links to,
-# confirmed by reading the rendered nav rather than guessing ("new" 404s;
-# the real key is "newest").
+# The sort keys Lichess's listing navigation links to ("newest", not "new").
 VALID_SORTS = frozenset({"hot", "newest", "popular", "updated"})
 
 # Observed on every fetched page during verification. A page returning fewer
@@ -49,11 +38,8 @@ STUDIES_PER_PAGE = 16
 class ScrapedStudyCard:
     """One study as listed on a lichess.org/study/all/{sort} page.
 
-    Unlike the API's study objects, no field here carries a documented
-    guarantee -- they're read positionally off HTML class names that Lichess
-    could change. `likes` is whatever number Lichess displays next to the
-    bookmark icon; this scraper does not interpret what that metric means
-    beyond reading it.
+    Read from HTML class names, so nothing here is guaranteed. `likes` is
+    the number Lichess shows next to the bookmark icon.
     """
 
     study_id: str
@@ -66,10 +52,8 @@ class ScrapedStudyCard:
 
 
 def _parse_card(card) -> ScrapedStudyCard | None:
-    """Parse one `div.study.paginated` card, or return None if its markup
-    doesn't match what verification found -- callers log and skip rather
-    than fail the whole page over one unexpected card.
-    """
+    """Parse one `div.study.paginated` card, or return None if its markup is
+    unexpected, so one odd card doesn't fail the page."""
     link = card.select_one("a.overlay")
     name_el = card.select_one("h2.study-name")
     meta = card.select_one(".top span")
@@ -80,11 +64,9 @@ def _parse_card(card) -> ScrapedStudyCard | None:
     if not href.startswith("/study/"):
         return None
 
-    # Rendered as "<likes> • <author> • <relative time>". The <time>
-    # element carries the real timestamp in its datetime attribute (the
-    # visible relative text, e.g. "3 hours ago", is filled in client-side by
-    # JavaScript and so is empty in the server-rendered HTML this scraper
-    # reads) -- only the like count and author need pulling from the text.
+    # Rendered as "<likes> • <author> • <relative time>". The time text is
+    # filled in by JavaScript, so the timestamp comes from the datetime
+    # attribute; only likes and author are read from the text.
     parts = [p.strip() for p in meta.get_text(" ", strip=True).split("•") if p.strip()]
     likes = int(parts[0]) if parts and parts[0].isdigit() else 0
     author = parts[1] if len(parts) > 1 else ""
@@ -107,17 +89,10 @@ def iter_studies_by_sort(
     http_client: httpx.Client | None = None,
     pacer: RequestPacer | None = None,
 ) -> Iterator[ScrapedStudyCard]:
-    """Yield studies from a lichess.org/study/all/{sort} listing, page by
-    page, stopping when a page returns fewer than STUDIES_PER_PAGE cards
-    (the natural end of the listing), when max_pages is reached, or when
-    Lichess responds 400 to a page past its own depth limit (see below) --
-    whichever comes first.
-
-    Accepts an external RequestPacer for the same reason LichessClient
-    does: a caller issuing both listing and content-fetch requests in the
-    same run should have them share one rate limit against the same host,
-    not enforce two independent ones.
-    """
+    """Yield studies from a listing, page by page, until a page comes back
+    short, max_pages is reached, or Lichess returns 400 past its depth
+    limit. Pass the caller's RequestPacer so listing and other requests
+    share one rate limit."""
     if sort not in VALID_SORTS:
         raise ValueError(f"sort must be one of {sorted(VALID_SORTS)}, got {sort!r}")
 
@@ -130,12 +105,8 @@ def iter_studies_by_sort(
             pacer.wait()
             response = client.get(f"/study/all/{sort}", params={"page": page})
             if response.status_code == 400:
-                # Observed in practice, requesting a large --popular-count:
-                # the "popular" listing has a hard server-side page depth
-                # limit and returns 400 Bad Request past it, rather than an
-                # empty 200 page the way every other sort/page naturally
-                # ends -- from a caller's perspective this *is* the end of
-                # the listing, not a real error worth propagating.
+                # The "popular" listing returns 400 past its maximum page
+                # depth instead of an empty page; that is the end of it.
                 logger.info("Reached the end of the %r listing at page %d", sort, page)
                 return
             response.raise_for_status()
@@ -175,20 +146,12 @@ def fetch_study_chapters(
 ) -> list[StudyChapter]:
     """Fetch the chapter list (id and name) for one study.
 
-    Neither Lichess's documented API nor the PGN export
-    (lichess_client.fetch_study_pgn) exposes chapter ids -- the PGN's
-    per-chapter [Event] header carries only the chapter name. This instead
-    reads the plain study page (lichess.org/study/{study_id}), which
-    server-renders a `<script type="application/json" id="page-init-data">`
-    block containing the same data the page's own JavaScript bootstraps
-    from, including a full study.chapters list with real ids. No
-    authentication or websocket connection needed: a study's full chapter
-    list, with distinct 8-character ids, is present in that one block.
+    The API and the PGN export don't include chapter ids, so this reads the
+    study page's `<script type="application/json" id="page-init-data">`
+    block, which holds study.chapters with their ids.
 
-    Returns an empty list if the page doesn't have the expected data block
-    (unexpected markup, private/deleted study) rather than raising --
-    a caller resolving a chapter for an embed URL should treat "unknown"
-    the same as "couldn't determine one," not crash the whole request.
+    Returns an empty list for unexpected markup or a private or deleted
+    study, rather than raising.
     """
     owns_client = http_client is None
     client = http_client or default_http_client()

@@ -1,14 +1,9 @@
-"""Shared helper for the content-hash natural keys used across ingestion
-(pgn_parser.compute_game_id, db_loader._chunk_hash): both build a SHA-256
-hash over several fields joined with a delimiter.
+"""Helpers for the content-hash keys (pgn_parser.compute_game_id,
+db_loader._chunk_hash), which hash several fields joined by a delimiter.
 
-A delimiter-joined string is only an unambiguous encoding of its fields --
-meaning two different sets of field values can never join to the same
-string -- if none of the fields contain the delimiter itself. Otherwise a
-"|" inside one field can shift where a reader thinks one field ends and the
-next begins, so two genuinely different records could hash identically.
-Both hash functions call check_no_delimiter on their fields before joining
-them, rather than assuming real data never contains a pipe character.
+The joined string only identifies its fields if no field contains the
+delimiter; otherwise two different records could hash the same. Both hash
+functions check their fields first instead of assuming no "|" ever appears.
 """
 
 from __future__ import annotations

@@ -1,10 +1,10 @@
 """The conversation half of the app's single screen: the chat transcript
-(PGN attachments included, see render_main_screen's chat_input), the live
-streaming/status UI for an in-flight answer, and the resource-recommendation
-cards. Owns st.session_state.chat_history.
+(PGN uploads included), the live progress and streaming UI for an answer in
+flight, and the resource-recommendation cards. Owns
+st.session_state.chat_history.
 
-render_main_screen also composes the board column, but that column's own
-rendering and state live in board_panel.py.
+render_main_screen also lays out the board column, whose rendering and state
+live in board_panel.py.
 """
 
 from __future__ import annotations
@@ -51,56 +51,31 @@ from src.ui.resources import (
 
 logger = logging.getLogger(__name__)
 
-# Anthropic's raw text deltas arrive in relatively large pieces (a clause or
-# sentence at a time), not the smooth word-by-word reveal seen in Claude.ai
-# or ChatGPT -- that reveal is a client-side pacing effect, not a property
-# of the network chunks. This regex re-splits each delta into word-sized
-# pieces (including leading and trailing whitespace, so pieces concatenate
-# back to the exact original text) so it can be paced the same way.
+# Anthropic streams text in clause-sized pieces. Splitting them into words
+# (whitespace kept, so the pieces rejoin exactly) lets the first words of
+# each turn be revealed at a steady typing pace.
 _WORD_SPLIT_RE = re.compile(r"\s*\S+\s*")
 STREAM_WORD_DELAY_SECONDS = 0.02
 
-# Matches the literal [[diagram: <label>]] marker SYSTEM_PROMPT instructs
-# the model to place inline in its own answer -- see _render_answer_content.
-_DIAGRAM_MARKER_RE = re.compile(r"\[\[diagram:\s*(.*?)\s*\]\]")
-
-# Caps the paced reveal to the first N words of any single turn's text.
-# Without a ceiling, a long answer -- 900+ words is realistic -- pays
-# STREAM_WORD_DELAY_SECONDS on every word, adding 15-20 seconds of purely
-# artificial delay on top of real generation and tool-call latency. The
-# first N words still get the typewriter feel; the rest appears at once.
+# Only the first words of a turn are paced; pacing a 900-word answer would
+# add 15-20 seconds of artificial delay.
 MAX_PACED_WORDS_PER_TURN = 40
 
-# Cap on how many inline diagrams one answer shows -- "main line + a couple
-# of popular sidelines" is usually 2-4 diagrams; a wall of positions on one
-# answer works against scannability.
+# The [[diagram: <label>]] marker the system prompt asks the model to place
+# where a diagram belongs (see _render_answer_content).
+_DIAGRAM_MARKER_RE = re.compile(r"\[\[diagram:\s*(.*?)\s*\]\]")
+
+# A main line plus a couple of sidelines; more stops being scannable.
 MAX_INLINE_DIAGRAMS = 4
 
-# Height of the scrollable message panel (see render_main_screen). Sized so
-# a fresh, question-less page fits inside a laptop viewport with no vertical
-# scroll; a 14" MacBook's default logical resolution is the binding case.
-# The board column's natural height is the real floor here, so this is set
-# to sit at that height rather than needlessly exceed it.
+# Tall enough to match the board column, short enough that a fresh page fits
+# a 14" laptop screen without scrolling. Phones drop the fixed height
+# (theme.css).
 MESSAGE_PANEL_HEIGHT_PX = 560
 
-# Streamlit's default chat avatars are a generic face/robot Material icon --
-# a visual cue that reads as "generic AI chatbot," working against the
-# deliberately non-modern, non-AI-flavored identity built for this app.
-# Chess pieces are already this app's own icon language (the board renders
-# pieces via chess.svg), not a new decoration introduced just for the
-# avatars.
-#
-# st.chat_message's avatar param only accepts emoji from Streamlit's own
-# curated allow-list (streamlit.emojis.ALL_EMOJIS), not arbitrary Unicode --
-# confirmed by reading _process_avatar_input directly: of the 12 chess piece
-# glyphs (U+2654-265F), only "black pawn" (U+265F) happens to be in that
-# list, so passing e.g. the knight glyph raised StreamlitAPIException
-# ("Failed to load the provided avatar value as an image") instead of
-# rendering. Passing a raw SVG string sidesteps the allow-list entirely --
-# image_to_url() special-cases strings that look like <svg ...> markup and
-# inlines them as a data URI -- and reuses chess.svg.piece(), the same
-# renderer used for the board itself, instead of depending on emoji font
-# coverage across viewers' systems.
+# Chess pieces instead of Streamlit's robot and face icons. Passed as SVG
+# markup because st.chat_message only accepts emoji from its own allow-list,
+# which includes just one chess glyph.
 _CHAT_AVATARS = {
     "user": chess.svg.piece(chess.Piece(chess.PAWN, chess.BLACK), size=32),
     "assistant": chess.svg.piece(chess.Piece(chess.BISHOP, chess.WHITE), size=32),
@@ -130,35 +105,22 @@ def ask_agent(
 def ask_with_status(
     question: str, *, history: list[dict[str, str]] | None = None
 ) -> tuple[str, list[tuple[str, str | None]]]:
-    """Run ask_agent, showing a progress bar (see progress_bar.py) and each
-    tool-calling step live, and streaming the final answer into view as it
-    generates, rather than a blank spinner followed by the whole answer
-    appearing at once.
-    Renders everything itself, diagrams included (see _render_answer_content)
-    -- callers should not render `answer` again afterward.
+    """Answer `question` with live feedback: a progress bar, a status line
+    per tool call, and the answer streaming in. Renders the finished answer
+    itself, diagrams included, so callers should not render it again.
 
-    history, if given, is prior turns for the model's context -- see
-    _build_message_history.
+    Returns (answer, touched_fens): the (fen, label) pairs tools reported, in
+    order, for chat_history to replay later. label is None except for
+    show_opening_line diagrams.
 
-    Returns (answer, touched_fens): every distinct (fen, label) pair
-    on_position reported during this call, in order (immediate repeats
-    deduped). label is None except for show_opening_line's calls. Returned
-    only so a caller can store it in chat_history for history replay --
-    already rendered here, not meant to be rendered again.
-
-    The stop button needs no explicit click handling: Streamlit treats
-    interactions as implicit yield points during a running script, so a
-    click interrupts this at the next word reveal.
+    The Stop button needs no handler: any click cancels the running script.
     """
     started_at = time.monotonic()
     progress_area = st.empty()
     progress_area.html(running_bar_html())
-    # Tool status lines and the live preview of the turn being streamed.
-    # The preview sits inside this area, below the lines, because a turn's
-    # text only turns out to be a tool-call rationale once the turn ends: on
-    # a tool call, on_step promotes it to a permanent line where it already
-    # is, instead of it visibly jumping into place. The whole area collapses
-    # into a "Done" box once the answer is in.
+    # Status lines, then the live preview of the turn being streamed. A turn
+    # is only known to be a status line or the answer once it ends, so the
+    # preview sits where a status line would go and on_step keeps it there.
     work_area = st.empty()
     with work_area.container():
         lines_area = st.empty()
@@ -171,10 +133,8 @@ def ask_with_status(
             for line in step_lines:
                 st.markdown(line)
 
-    # Declared after the work area: message_panel autoscrolls to follow
-    # streamed content, and a placeholder's DOM position is fixed at
-    # creation time, so declaring this first would pin it above the
-    # streamed text and scroll it out of view on a long answer.
+    # Created after the work area so it stays below the streaming text, which
+    # the message panel autoscrolls to follow.
     stop_placeholder = st.empty()
     stop_placeholder.button("Stop generating", key="stop_generating")
     final_area = st.empty()
@@ -188,15 +148,12 @@ def ask_with_status(
         pieces = _WORD_SPLIT_RE.findall(delta) or [delta]
         for piece in pieces:
             accumulated_text += piece
-            # Once the streaming turn is clearly the answer, the status
-            # lines above it make way; they return in the "Done" box.
+            # Once the turn is clearly the answer, the status lines make way.
             if lines_visible and _looks_like_answer(accumulated_text):
                 lines_area.empty()
                 lines_visible = False
-            # Strip diagram markers before the live preview, not just at
-            # final render -- otherwise raw "[[diagram: ...]]" syntax
-            # flashes on screen for the word or two it takes the closing
-            # bracket to stream in.
+            # Markers are stripped from the preview too, so raw syntax never
+            # flashes up while the closing brackets stream in.
             preview_area.markdown(_DIAGRAM_MARKER_RE.sub("", accumulated_text))
             words_this_turn += 1
             if words_this_turn <= MAX_PACED_WORDS_PER_TURN:
@@ -205,7 +162,7 @@ def ask_with_status(
     def on_step(text: str) -> None:
         nonlocal accumulated_text, words_this_turn, lines_visible
         step_lines.append(text)
-        # Also restores the lines if a long status line was briefly taken
+        # Also brings the lines back if a long status line was briefly taken
         # for the start of the answer.
         show_lines()
         lines_visible = True
@@ -214,10 +171,8 @@ def ask_with_status(
         preview_area.empty()
 
     def on_position(fen: str, *, label: str | None = None) -> None:
-        # Recorded for the answer's diagrams only. The board is the
-        # visitor's own game: replacing it with chess.Board(fen) would erase
-        # its move history even for the same position, and a question about
-        # some other line would wipe the game in progress.
+        # Recorded for the answer's diagrams only. The board is the visitor's
+        # own game, and replacing it would erase its move history.
         if not touched_fens or touched_fens[-1][0] != fen:
             touched_fens.append((fen, label))
 
@@ -226,34 +181,26 @@ def ask_with_status(
             question, on_step=on_step, on_chunk=on_chunk, on_position=on_position, history=history
         )
     except anthropic.APIError:
-        # Covers rate limits, timeouts, dropped connections, and transient
-        # 5xx/overloaded errors -- tool_runner only catches exceptions a
-        # *tool* raises (see build_tools' own docstring), so a failure in
-        # the SDK's own calls to Anthropic would otherwise crash the whole
-        # Streamlit script mid-answer.
+        # Rate limits, timeouts and 5xx errors from the SDK's own requests.
+        # tool_runner only catches exceptions raised inside tools.
         logger.exception("ask_agent failed")
         answer = ""
 
     if not answer.strip():
-        # The tool-calling loop can end on a turn whose only content was a
-        # tool call (rare -- see chess_agent.ask()'s docstring), which would
-        # otherwise render an empty chat bubble with no indication anything
-        # went wrong. Also doubles as the API-error fallback above.
+        # Covers an API failure and a loop that ended without any text.
         answer = (
-            "Something interrupted this response before it finished -- "
-            "try asking again, possibly with a narrower question."
+            "Something interrupted this response before it finished. "
+            "Try asking again, possibly with a narrower question."
         )
         final_area.markdown(answer)
     else:
-        # The completed answer goes to final_area, not preview_area:
-        # preview_area lives in the work area, which collapses into a "Done"
-        # box below, and would hide the answer inside it.
+        # final_area, not preview_area: the work area collapses into the
+        # "Done" box below and would hide the answer.
         with final_area.container():
             _render_answer_content(answer, touched_fens)
 
-    # The bar finishes from wherever it is, then the tool lines collapse
-    # into a "Done" box. The answer above is already fully rendered, so the
-    # short pause only lets the bar visibly complete.
+    # The bar runs to full from wherever it is, then the status lines
+    # collapse into a "Done" box. The answer is already on screen.
     progress_area.html(finishing_bar_html(time.monotonic() - started_at))
     time.sleep(FINISH_SECONDS)
     progress_area.empty()
@@ -264,28 +211,17 @@ def ask_with_status(
     return answer, touched_fens
 
 
-# How much of the answer to pass along as context for the resource lookup.
-# Enough to carry the topic -- an answer names the opening in its opening
-# lines -- without sending several thousand characters for the recommendation
-# agent to re-read on every click.
+# Enough of the answer to carry its topic, which an answer names early.
 ANSWER_CONTEXT_CHARS = 1200
 
 
 def _lookup_context(history: list) -> str:
-    """What the resource lookup should treat as "the question".
+    """The search context for the resource lookup: the latest question as
+    the model saw it (with its board position) plus the start of the answer.
 
-    Not just the typed text. A question asked from the board is usually
-    contentless on its own -- "how should White play here?" -- with the
-    actual subject living in the FEN beside it and in the answer that came
-    back. Searching a study library for that bare sentence matches nothing,
-    which surfaced as "nothing was a close enough match" for every
-    board-asked question while typed ones worked fine.
-
-    So this rebuilds the turn the way the chat agent saw it (question plus
-    its board position, via _to_model_text) and appends the opening of the
-    answer, which is where the opening actually gets named -- "this is the
-    Dutch Defense, ECO A80" is the search term that finds a Dutch study,
-    and nothing in the user's own words contains it.
+    A question asked from the board ("how should White play here?") names
+    nothing searchable on its own; the answer is where the opening gets
+    named ("this is the Dutch Defense, ECO A80").
     """
     _, question, fen_context, _ = history[-2]
     lookup = _to_model_text(question, fen_context)
@@ -297,21 +233,20 @@ def _lookup_context(history: list) -> str:
 
 @dataclass
 class _ResourceLookup:
-    """A "Find related resources" lookup for the latest answer, running in
-    the background. `revealed` records whether its results have been shown."""
+    """A resource lookup for the latest answer, running in the background.
+    `revealed` records whether its results have been shown."""
 
     future: Future[list[Recommendation]]
     revealed: bool = False
 
 
 def _start_resource_lookup() -> None:
-    """Start the lookup for the exchange just answered, on a background
-    thread (resources.get_lookup_executor), so reading the answer and using
-    the board can't cancel it. Replaces any lookup still running for an
-    earlier answer, whose results are then never shown.
+    """Start the lookup for the exchange just answered on a background
+    thread, so reading the answer or using the board can't cancel it.
+    Replaces any lookup still running for an earlier answer.
 
-    The shared clients are resolved here, on the script thread, and handed
-    to the worker, which only makes network calls.
+    The shared clients are resolved here, on the script thread; the worker
+    only makes network calls.
     """
     question = _lookup_context(st.session_state.chat_history)
     db_pool, voyage = get_db_pool(), get_voyage()
@@ -327,8 +262,8 @@ def _start_resource_lookup() -> None:
                 question, db_pool, voyage, client=client, http_client=http_client, pacer=pacer
             )
         except Exception:
-            # Logged here because nothing waits on this thread to log it;
-            # re-raised so the button can show the lookup failed.
+            # Nothing waits on this thread, so log here; re-raise so the
+            # button can show the lookup failed.
             logger.exception("recommend_resources failed")
             raise
 
@@ -337,9 +272,9 @@ def _start_resource_lookup() -> None:
 
 @st.fragment(run_every=2)
 def _render_pending_resources_button() -> None:
-    """The disabled button shown while a lookup runs. Rechecks every two
-    seconds without rerunning the page, and triggers one full rerun when
-    the lookup finishes so the ready button replaces this one."""
+    """The disabled button shown while a lookup runs. Checks every two
+    seconds without rerunning the page, then reruns it once when the lookup
+    finishes."""
     lookup = st.session_state.resource_lookup
     if lookup is not None and lookup.future.done():
         st.rerun()
@@ -347,21 +282,15 @@ def _render_pending_resources_button() -> None:
 
 
 def _render_resource_recommendations(*, disabled: bool = False) -> None:
-    """The "Find related resources" button for the latest answer, and the
-    studies and games it reveals. The lookup itself starts in the background
-    as soon as an answer finishes (see _start_resource_lookup); the button
-    stays disabled until its results are ready, then shows them at once.
+    """The "Find related resources" button for the latest answer and the
+    studies and games it reveals. Disabled until the background lookup
+    finishes; then a click shows the results at once.
 
-    The button always renders, even on a fresh page -- disabled rather than
-    absent, both as a visible preview of the feature and so it's a stable
-    tutorial_overlay spotlight target. Every state uses the same key for the
-    same reason.
+    The button is always rendered under the same key, disabled when there is
+    nothing to show, so the tour can always find it.
     """
     lookup: _ResourceLookup | None = st.session_state.resource_lookup
     if lookup is None:
-        # secondary, not primary: "Evaluate this position with Stockfish" is
-        # the page's one primary action -- two competing primary-styled
-        # buttons would dilute that visual hierarchy.
         st.button("Find related resources", key="find_resources", disabled=True)
         if not st.session_state.chat_history:
             st.caption("Ask something first, then look here for related studies and games.")
@@ -401,11 +330,9 @@ def _render_resource_recommendations(*, disabled: bool = False) -> None:
                 <p class="rec-blurb">{html.escape(rec.blurb)}</p>
             </div>
             """)
-            st.caption("From the local corpus, moves only -- no commentary included.")
+            st.caption("From the local corpus, moves only, with no commentary.")
             st.code(rec.pgn, language=None)
-            # key qualified with idx, not just rec.game_id -- recommend_chessbase_game
-            # (pipeline.py) has no dedup, so the model could in principle recommend
-            # the same game twice in one turn, which would collide on game_id alone.
+            # idx in the key: the same game could be recommended twice.
             if st.button("Play through this game", key=f"play_{idx}_{rec.game_id}"):
                 game_path = _game_path_from_pgn(rec.pgn)
                 if game_path is None:
@@ -419,18 +346,9 @@ def _render_resource_recommendations(*, disabled: bool = False) -> None:
 
 
 def _game_path_from_pgn(pgn: str) -> list[str] | None:
-    """Every ply's FEN in a PGN's mainline, starting position included at
-    index 0 -- the sequence the board panel's Prev/Next steps through
-    for a "Play through this game" recommendation.
-
-    Returns None if the PGN doesn't parse. Defensive, not expected in
-    practice: structured_search.game_moves_as_pgn (the only source of
-    rec.pgn today) reconstructs PGN via python-chess's own serializer from
-    moves already validated with board.parse_san while building it, so it
-    should always be well-formed -- but nothing forces that guarantee to
-    hold for every future caller of this helper, and a malformed PGN
-    shouldn't crash the page.
-    """
+    """The FEN after every ply of a PGN's main line, starting position
+    first: what the board's Previous/Next buttons step through when a
+    recommended game is played back. None if the PGN doesn't parse."""
     game = chess.pgn.read_game(io.StringIO(pgn))
     if game is None:
         return None
@@ -445,59 +363,38 @@ def _game_path_from_pgn(pgn: str) -> list[str] | None:
 def _describe_uploaded_game(
     uploaded_file, user_text: str
 ) -> tuple[str | None, list[tuple[str, str]]]:
-    """Turn a PGN attached to the chat input (see render_main_screen's
-    accept_file=True) into the model-facing question text for Layer 4's
-    find_similar_corpus_games: a plain-language description of the game's
-    moves, combined with whatever the user typed alongside it, or a
-    sensible default question if they attached the file with no message
-    of its own.
+    """Turn a PGN attached to the chat input into the question sent to the
+    model (for Layer 4's find_similar_corpus_games): the game's moves, plus
+    whatever the user typed, or a default question if they typed nothing.
 
     Returns (question, notices). question is None when the file holds no
-    usable game; notices are (level, text) pairs the caller is responsible
-    for showing. They are returned rather than rendered here because a
-    successful upload is followed immediately by a rerun, which would
-    discard anything this function had drawn -- so the caller stashes them
-    and renders them on the run that shows the answer.
+    usable game. notices are (level, text) pairs for the caller to show on
+    the run that displays the answer, since a successful upload reruns the
+    page straight away.
     """
-    # Initialized before the write, not inside it: if the write itself
-    # fails, the finally below still has a defined name to check instead of
-    # raising NameError and masking the real exception.
     tmp_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".pgn", delete=False) as tmp:
             tmp_path = tmp.name
             tmp.write(uploaded_file.getvalue())
-        # Only the first game is ever used below, so pull at most two from
-        # the generator: the first to use, and a second only to learn
-        # whether there's more than one, without fully parsing an upload
-        # (untrusted input) that could contain a large number of games.
-        # truncate_at_repetition bounds a single game's move count too --
-        # otherwise an adversarial upload (e.g. two pieces shuffled back
-        # and forth) could inflate move_sans below into an arbitrarily
-        # long, expensive prompt with no cap at all.
+        # Uploads are untrusted: read at most two games (one to use, one to
+        # know there were more), and cut a game off at a repetition so a
+        # crafted file can't produce an arbitrarily long prompt.
         first_two_games = list(
             itertools.islice(
                 parse_pgn(tmp_path, source="user_upload", truncate_at_repetition=True), 2
             )
         )
     except ValueError:
-        # compute_game_id (parse_pgn -> parse_game -> compute_game_id)
-        # deliberately raises ValueError if a header contains ID_DELIMITER
-        # (see hash_utils.check_no_delimiter) -- rare, but this is
-        # untrusted user input, and it's exactly the kind of thing someone
-        # poking at the upload feature might hit. The same honest message
-        # used below for a genuinely unparseable file already covers this
-        # case too; no need for a second, more specific one.
+        # Raised for a header containing the game-ID delimiter
+        # (hash_utils.check_no_delimiter).
         return None, [("error", "Couldn't find a game in that file.")]
     finally:
         if tmp_path is not None:
             os.unlink(tmp_path)
 
-    # Both halves of this check matter. python-chess returns a Game object
-    # for input containing no chess at all -- a text file of prose parses
-    # "successfully" into a game with zero moves -- so testing only whether
-    # a game came back lets a non-PGN upload through to the model as an
-    # empty move list, costing a request and producing a meaningless answer.
+    # python-chess parses any text, prose included, into a game with zero
+    # moves, so an empty move list means "not a PGN".
     if not first_two_games or not first_two_games[0].moves:
         return None, [("error", "Couldn't find a game in that file.")]
 
@@ -507,10 +404,8 @@ def _describe_uploaded_game(
 
     game = first_two_games[0]
     move_sans = [m.move_san for m in game.moves]
-    # A movetext error stops the parse at that point, so the moves above are
-    # a prefix of the real game. Said out loud for the same reason the
-    # multiple-games case is: analyzing part of someone's game without
-    # telling them is worse than analyzing it and saying so.
+    # A movetext error stops the parse there, so only part of the game was
+    # read; say so rather than silently analyzing a fragment.
     if game.parse_errors:
         notices.append(
             (
@@ -524,22 +419,18 @@ def _describe_uploaded_game(
     )
     if user_text.strip():
         return f"{game_description} {user_text}", notices
-    # No message of their own to go on, so this default has to name a
-    # length -- unlike a typed question, which already implies "answer
-    # this much and stop", a bare upload gives the model nothing to
-    # calibrate against, and the general efficiency nudge in SYSTEM_PROMPT
-    # (about tool-call count, not prose length) doesn't cover that.
+    # A bare upload gives the model no sense of how much to write, so the
+    # default question asks for a short answer.
     return (
         f"{game_description} Find similar games in the corpus and give me a brief, "
-        "illustrative comparison -- a few sentences, not a full report."
+        "illustrative comparison: a few sentences, not a full report."
     ), notices
 
 
-# A streaming turn's text only turns out to be a tool-call status line or the
-# answer once the turn ends. Status lines are one sentence (the longest seen
-# in logs is ~215 characters) and never contain a line break, so text past
-# this length, or with a line break (answers often open with a heading), is
-# treated as the answer starting.
+# A streamed turn is only known to be a status line or the answer once it
+# ends. Status lines are one sentence (the longest seen is ~215 characters)
+# with no line break, so longer text, or text with a line break (answers
+# often open with a heading), is treated as the answer starting.
 ANSWER_DETECTION_CHARS = 300
 
 
@@ -551,53 +442,27 @@ DIAGRAM_SIZE_PX = 180
 
 
 def render_position_thumbnail(fen: str, label: str | None = None) -> None:
-    """A small, plain board diagram for a position a tool call actually
-    verified (see ask_with_status's touched_fens) -- no highlights or
-    arrows yet, those need annotation data this app's ingestion pipeline
-    currently discards (see CLAUDE.md's Board input note). Malformed FENs
-    are the caller's problem to guard against; this assumes a valid one.
-    """
+    """A small board diagram for a position a tool reported. Assumes a
+    valid FEN."""
     if label:
         st.caption(label)
     svg = chess.svg.board(board=chess.Board(fen), size=DIAGRAM_SIZE_PX)
-    # chess.svg.board's own <svg> tag is exactly DIAGRAM_SIZE_PX square
-    # (its width/height attributes say so), but two things about the
-    # surrounding HTML document st.iframe builds around it add invisible
-    # height on top of that: the browser's own default ~8px <body> margin
-    # (killed by margin:0 below), and -- less obvious, and the part that
-    # was still overflowing with only the margin fix -- an <svg> is an
-    # inline element by default, so the browser reserves a few pixels of
-    # line-height beneath it for text descenders, the same "mystery gap"
-    # that shows up under a bare <img> in a div. line-height:0 on body
-    # collapses that reserved space to nothing, so the real content height
-    # matches DIAGRAM_SIZE_PX exactly instead of a few px more.
+    # margin:0 removes the body's default margin, and line-height:0 removes
+    # the gap browsers leave under an inline svg, so the frame is exactly
+    # DIAGRAM_SIZE_PX tall.
     st.iframe(f"<body style='margin:0;line-height:0'>{svg}</body>", height=DIAGRAM_SIZE_PX)
 
 
 def _render_answer_content(text: str, image_fens: list[tuple[str, str | None]]) -> None:
-    """Renders `text` as markdown, replacing each [[diagram: <label>]]
-    marker (see SYSTEM_PROMPT's show_opening_line instruction) with the
-    matching labeled diagram, instead of every diagram dumped after the
-    full answer regardless of what it's actually discussing.
+    """Render an answer, putting each labeled diagram at its
+    [[diagram: <label>]] marker.
 
-    The marker is a literal token the model was explicitly told to place
-    at the point in its own answer where a diagram belongs, using the same
-    label it already passed to show_opening_line. Searching the answer's
-    free-form prose for that label instead almost never matches -- nothing
-    obliges the model to repeat a tool argument verbatim in its synthesis
-    -- so diagrams would land at the end regardless. A marker the model is
-    told to write is a real contract; a string search against text it was
-    never told to shape around that string is not.
-
-    Every marker match is stripped from the visible text whether or not it
-    resolves to a diagram -- a label with nothing left to match (unknown
-    label, or a repeated label with no diagrams left) just disappears
-    rather than leaking raw "[[diagram: ...]]" syntax into the chat.
-    Diagrams with no matching marker at all (every unlabeled one --
-    evaluate_chess_position, find_similar_corpus_games, see
-    ask_with_status's docstring -- plus any labeled one the model forgot to
-    place a marker for) render after the full text, in original order.
-    Capped at MAX_INLINE_DIAGRAMS total.
+    The system prompt asks the model to write that marker, with the label it
+    gave show_opening_line, where the diagram belongs; searching the prose
+    for the label instead rarely matches. Markers are always stripped, even
+    when no diagram matches. Diagrams without a marker (engine evaluations,
+    or a marker the model left out) follow the text in order. At most
+    MAX_INLINE_DIAGRAMS are shown.
     """
     by_label: dict[str, list[str]] = {}
     for fen, label in image_fens:
@@ -633,44 +498,29 @@ def _render_answer_content(text: str, image_fens: list[tuple[str, str | None]]) 
 
 
 def _to_model_text(content: str, fen_context: str | None) -> str:
-    """The exact text sent to the model for one user turn -- content as
-    typed, with the "Current board position" prefix prepended when the
-    turn was about a specific position (see chess_agent.SYSTEM_PROMPT).
-    Used both for the current turn and to reconstruct past ones for
-    history, so the two can never drift apart.
-    """
+    """The text sent to the model for one user turn: the question, prefixed
+    with "Current board position: <FEN>" when it was asked about the board.
+    Used for both the current turn and history, so the two always match."""
     if fen_context is not None:
         return f"Current board position: {fen_context}\n\n{content}"
     return content
 
 
-# Bounds how many prior chat_history entries get replayed as context on each
-# call -- unbounded history would grow every question's token cost (and
-# latency/cost) linearly with the whole session's length. 10 entries is 5
-# user/assistant exchanges, generous for a follow-up-question demo without
-# letting a long session's cost run away.
+# Five exchanges of context for follow-up questions; replaying the whole
+# session would grow every question's cost with its length.
 MAX_HISTORY_MESSAGES = 10
 
-# This app has no auth, and every question bills at least one Anthropic call
-# (often several, across tool-calling turns) plus a Voyage embedding call
-# whenever search_annotations fires -- with a public deployment URL, nothing
-# else stands between a visitor and this app's own API budget. Session-local,
-# not a deployment-wide counter: it doesn't stop a determined attacker
-# spinning up fresh sessions (st.session_state resets per session), but it
-# does stop the far likelier case -- a stuck retry, someone mashing an
-# example-prompt button, or a casual script -- without penalizing every other
-# concurrent visitor the way a shared counter would. Pair with a hard
-# spending cap in the Anthropic/Voyage dashboards for the backstop this can't
-# provide on its own.
+# Every question costs Anthropic (and often Voyage) calls on a public,
+# unauthenticated app. This per-session limit stops runaway clicking or a
+# simple script without throttling other visitors; it can't stop someone
+# opening new sessions, which is what the API spending caps are for.
 MAX_REQUESTS_PER_MINUTE = 8
 REQUEST_WINDOW_SECONDS = 60
 
 
 def _build_message_history() -> list[dict[str, str]]:
-    """The most recent chat_history entries, translated into the plain
-    {"role", "content"} dicts ask() expects -- see ask()'s own docstring
-    for why this replays only final text, not full tool-call traces.
-    """
+    """Recent chat_history as the {"role", "content"} dicts ask() expects:
+    final text only, no tool calls."""
     recent = st.session_state.chat_history[-MAX_HISTORY_MESSAGES:]
     return [
         {
@@ -682,53 +532,33 @@ def _build_message_history() -> list[dict[str, str]]:
 
 
 def _submit_question(question: str, *, fen_context: str | None = None) -> bool:
-    """Append a user turn, get the agent's answer, and append it -- the one
-    path both the main chat input and the board-side "ask about this
-    position" box go through, so a follow-up question either way lands in
-    the same transcript instead of two disconnected conversations.
+    """Ask the agent and add the exchange to the transcript. Every question
+    goes through here: typed, example prompts, Evaluate and the board's own
+    question box.
 
-    Only ever called from inside chat_col (see render_main_screen and its
-    "pending_question" handling below) -- never directly from a
-    board-side button. ask_with_status renders live UI (a status panel, a
-    streaming answer area) at whatever point in the layout it's called from,
-    so calling it directly from a button inside the narrow board column
-    would put that live UI in the board column instead of the chat
-    transcript. Board-side triggers stash (question, fen) in
-    st.session_state.pending_question and rerun instead, so the
-    actual submission always happens from chat_col on the next script pass.
+    Called from the chat column only, since the live answer UI renders
+    wherever this runs; board-side buttons set
+    st.session_state.pending_question and rerun instead.
 
-    fen_context, when given, is sent to the model as part of the question
-    (see chess_agent.SYSTEM_PROMPT's "Current board position" instruction)
-    and stored alongside the question in chat_history so the transcript can
-    show which position a question was about, without the FEN prefix itself
-    ever appearing as if the user had typed it.
+    fen_context, if given, is sent to the model with the question and shown
+    under it in the transcript.
 
-    Rate-limited first, before anything else: see MAX_REQUESTS_PER_MINUTE's
-    own comment. Checked (and the attempt recorded) ahead of every other
-    branch below so a throttled request never reaches ask_with_status and
-    never touches chat_history -- a rejected question shouldn't appear in
-    the transcript as if it had been asked and silently ignored.
-
-    Returns whether the question was actually submitted. False means the
-    rate limiter rejected it and drew a warning, which the caller must not
-    follow with a rerun -- doing so wipes the warning off the screen before
-    anyone reads it, leaving a throttled question looking like it silently
-    did nothing.
+    Returns False when the rate limit rejected the question. The caller must
+    not rerun then, or the warning would vanish before anyone read it.
     """
     now = time.monotonic()
     request_times = st.session_state.setdefault("request_times", [])
     request_times[:] = [t for t in request_times if now - t < REQUEST_WINDOW_SECONDS]
     if len(request_times) >= MAX_REQUESTS_PER_MINUTE:
         st.warning(
-            "You're asking questions faster than this demo can keep up with -- "
-            "try again in a moment."
+            "You're asking questions faster than this demo can keep up with. Try again in a moment."
         )
         return False
     request_times.append(now)
     # The previous answer's lookup no longer applies; its results are dropped.
     st.session_state.resource_lookup = None
 
-    history = _build_message_history()  # prior turns, before this one is appended below
+    history = _build_message_history()  # earlier turns only
     st.session_state.chat_history.append(("user", question, fen_context, []))
     with st.chat_message("user", avatar=_CHAT_AVATARS["user"]):
         st.markdown(question)
@@ -740,38 +570,20 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> bool:
     st.session_state.chat_history.append(("assistant", answer, None, touched_fens))
     _start_resource_lookup()
 
-    # See conversation_log.log_conversation_best_effort's own docstring:
-    # it guarantees on its own that a logging failure can't reach here.
     log_conversation_best_effort(get_db_pool(), question, fen_context, answer)
     return True
 
 
 def _render_example_prompts(*, disabled: bool = False) -> None:
-    """Shown only on an empty conversation (render_main_screen checks
-    chat_history before calling this) -- teaches the chat's actual range by
-    demonstration, one example per layer/feature. Clicking one submits it,
-    the same as typing it and pressing enter would.
-
-    Stashes into st.session_state.pending_question and reruns rather than
-    calling _submit_question directly: this runs *before* render_main_
-    screen's chat_history loop in the same script pass, so submitting
-    inline here would render the new pair once from this call and again
-    from that loop right after -- every message doubled. Rerunning lets a
-    fresh pass see chat_history as already non-empty, so this function is
-    skipped and the loop renders the new pair exactly once.
-    """
+    """Example questions for an empty conversation, one per layer, so the
+    four together show the routing. A click stashes the question as pending
+    and reruns, the same path as a typed question."""
     st.caption("Try asking:")
-    # One example per layer, so the four together demonstrate the routing
-    # rather than four variations on the same backend.
     examples = [
-        # Layers 1 + 2 together: corpus statistics synthesized with strategic
-        # prose. The flagship query for this project (see CLAUDE.md).
-        "How should White meet the Sicilian Defense?",
-        "Evaluate 1. e4 e5 2. Qh5 for White",  # Layer 3, engine grounding
-        "What's the plan behind an isolated queen pawn?",  # Layer 2, conceptual
-        # Layer 1 alone: a piece-placement aggregation with no conceptual
-        # half, so one example exercises the structured-search path on its own.
-        "Where does White's knight usually end up in the Najdorf?",
+        "How should White meet the Sicilian Defense?",  # Layers 1 + 2: stats and plans
+        "Evaluate 1. e4 e5 2. Qh5 for White",  # Layer 3: engine
+        "What's the plan behind an isolated queen pawn?",  # Layer 2: concepts
+        "Where does White's knight usually end up in the Najdorf?",  # Layer 1: statistics
     ]
     for i, example in enumerate(examples):
         if st.button(example, key=f"example_prompt_{i}", width="stretch", disabled=disabled):
@@ -780,22 +592,9 @@ def _render_example_prompts(*, disabled: bool = False) -> None:
 
 
 def render_main_screen() -> None:
-    # The walkthrough content that used to live here (what the chat/board/
-    # find-resources/PGN-upload each do) is now covered by app.py's own
-    # render_tutorial_trigger() (src/ui/tutorial_overlay) spotlight tour --
-    # a second, redundant explanation of the same UI right below it was the
-    # user's own call to cut once both had been tried side by side.
-    #
-    # This one line survives on its own, not folded into the tour: a
-    # standing caption, not something that only appears if a viewer happens
-    # to click "How this works" -- CLAUDE.md requires this caveat stay
-    # visible in the UI, not just documented, and the tour's steps are
-    # about what each control does, not about the answers' reliability.
-    #
-    # Keyed wrapper so styles.py can size this one caption down without
-    # touching every other st.caption on the page -- present, but a quiet
-    # footnote under the header rather than a second headline competing
-    # with the title above it.
+    # Kept on screen rather than only in the tour or README: it's the
+    # caveat about how far the answers can be trusted. Keyed so theme.css
+    # can make it a quiet footnote.
     with st.container(key="reliability_note"):
         st.caption(
             "Answers synthesize retrieved human commentary and engine output, "
@@ -824,49 +623,28 @@ def render_main_screen() -> None:
 
     chat_col, board_col = st.columns([3, 2])
 
-    # True while an answer is being generated: pending_question is set on the
-    # run that submits, and cleared by the run that actually calls the agent.
+    # A question is pending from the run that submits it until the run that
+    # answers it; any click during that run would cancel the answer.
     generating = st.session_state.pending_question is not None
 
-    # board_col is rendered before chat_col even though it sits to the right.
-    # st.columns fixes the visual order when the columns are created, so the
-    # order of these `with` blocks only decides what reaches the browser
-    # first -- and that matters here. The agent call blocks inside chat_col,
-    # so anything rendered after it does not appear until the answer is
-    # finished; the board the user sees during that wait would be the
-    # previous run's, still fully interactive. Rendering it first means the
-    # disabled board is on screen for the whole generation.
+    # The board column renders first even though it sits on the right: the
+    # answer blocks the script inside the chat column, so this way the board
+    # appears disabled for the whole answer instead of staying clickable.
     with board_col, st.container(key="board_panel"):
-        # Keyed so styles.py can tighten the default ~16px gap Streamlit puts
-        # between every element in this column. This column's natural content
-        # runs taller than the chat column's, making it the binding
-        # constraint on total page height -- see stMainBlockContainer's
-        # padding comment in styles.py for the rest of that budget.
         render_board_panel(disabled=generating)
-        # Composed here rather than called from inside the board panel: the
-        # recommendation cards are a separate concern that happens to share
-        # this column, and keeping the call here is what lets board_panel.py
-        # stay independent of the chat module it would otherwise import.
         st.divider()
         _render_resource_recommendations(disabled=generating)
 
     with chat_col:
-        # A fixed-height, internally scrolling panel, not chat_input's own
-        # "pin to the bottom of the page" trick -- that trick only works
-        # when chat_input sits at the top level of the app; nested in this
-        # column (alongside board_col), it just renders inline after the
-        # last message instead, so its position on the page drifted with
-        # the conversation's length -- sometimes level with the board,
-        # sometimes well below it. autoscroll left at its default (None):
-        # Streamlit auto-enables it for a fixed-height container holding
-        # st.chat_message elements, exactly this case, so a new message
-        # scrolls itself into view without extra plumbing here.
+        # A fixed-height scrolling panel keeps the chat input level with the
+        # board; st.chat_input only pins itself to the page bottom at the top
+        # level. Streamlit autoscrolls a fixed-height container of chat
+        # messages on its own.
         message_panel = st.container(height=MESSAGE_PANEL_HEIGHT_PX, border=True, key="chat_panel")
         with message_panel:
             if not st.session_state.chat_history:
-                # Still drawn on the run that generates the first answer
-                # (chat_history is only appended inside that run), so they
-                # are disabled then: a click would cancel the answer.
+                # Also drawn on the run that answers the first question, so
+                # disabled then: a click would cancel the answer.
                 _render_example_prompts(disabled=generating)
             for role, content, fen, image_fens in st.session_state.chat_history:
                 with st.chat_message(role, avatar=_CHAT_AVATARS[role]):
@@ -877,38 +655,24 @@ def render_main_screen() -> None:
                     if fen is not None:
                         st.caption(f"Position: `{fen}`", help=FEN_HELP)
 
-            # An answer is lost whenever the run generating it is cancelled,
-            # which any widget interaction does -- the Stop button included,
-            # since that is the mechanism it works by. The user turn was
-            # already appended before the agent call, so what survives is a
-            # question with no reply and no explanation. Saying so is the
-            # difference between a visibly interrupted answer and one that
-            # looks like the app silently failed.
+            # Any click during an answer cancels it (the Stop button works
+            # that way), leaving a question with no reply. Say so instead of
+            # looking like a silent failure.
             history = st.session_state.chat_history
             if history and history[-1][0] == "user" and not generating:
                 st.info("That answer was interrupted before it finished. Ask again to retry.")
 
             pending = st.session_state.pending_question
             if pending is not None:
-                # Upload notices raised on the submitting run, shown here on
-                # the run that renders the answer they apply to.
                 for level, message in st.session_state.pending_notices:
                     getattr(st, level)(message)
                 st.session_state.pending_notices = []
                 st.session_state.pending_question = None
                 pending_question, pending_fen = pending
                 submitted = _submit_question(pending_question, fen_context=pending_fen)
-                # Rerun rather than let this script run fall through to the
-                # code below: chat_history was still empty at the `if not
-                # st.session_state.chat_history:` check above (it's ABOVE
-                # this block), so _render_example_prompts() already rendered
-                # once this run despite chat_history being non-empty now --
-                # a fresh rerun starts over with chat_history correctly
-                # non-empty from the start, so that check skips it.
-                #
-                # Skipped when the rate limiter rejected the question: there
-                # is no new message to re-render, and rerunning would erase
-                # the warning it just drew.
+                # Rerun so the example prompts, drawn above while the history
+                # was still empty, disappear. Not after a rate-limit
+                # rejection, which would erase its warning.
                 if submitted:
                     st.rerun()
 
@@ -917,12 +681,8 @@ def render_main_screen() -> None:
             accept_file=True,
             file_type=["pgn"],
         )
-        # Questions and answers are saved to the conversation_log table (see
-        # src/ui/conversation_log.py). Stated here, next to the input itself,
-        # rather than only in the README: the people typing into a public
-        # demo are not the people reading its documentation, and this app's
-        # own premise is disclosing its limits up front instead of leaving
-        # them to be discovered.
+        # Said next to the input, where visitors will see it (see
+        # conversation_log.py).
         st.caption("Questions and answers are saved to help improve this demo.")
         if submission is not None:
             question = None
@@ -930,23 +690,14 @@ def render_main_screen() -> None:
             if submission.files:
                 question, notices = _describe_uploaded_game(submission.files[0], submission.text)
                 if question is None:
-                    # No rerun follows a rejected upload, so these are shown
-                    # now; anything else is stashed for the run that reruns.
+                    # No rerun follows a rejected upload, so show these now.
                     for level, message in notices:
                         getattr(st, level)(message)
             elif submission.text.strip():
-                # .strip(): a whitespace-only submission is truthy, and used
-                # to reach the agent, which had nothing to answer and
-                # returned the generic "something interrupted this response"
-                # fallback -- blaming the app for an empty question, and
-                # paying for a request to do it.
                 question = submission.text
             if question is not None:
-                # Stashed and rerun rather than submitted here, matching the
-                # board-side triggers. The board is rendered before this
-                # column, so it is only drawn in its disabled state on a run
-                # that already knows a question is pending -- which is the
-                # run this rerun creates.
+                # Stashed and rerun, like the board's buttons, so the board
+                # is drawn disabled for the whole answer.
                 st.session_state.pending_question = (question, None)
                 st.session_state.pending_notices = notices
                 st.rerun()
