@@ -105,11 +105,9 @@ def test_pace_sleeps_only_when_a_request_follows_closely_behind_the_last():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="ok")
 
-    # _pace() calls time.monotonic() once on the very first call (nothing to
-    # compare against yet) and twice on every call after (once to compute
-    # elapsed, once to record the new last-request time) -- three values
-    # covers both calls: 100.0 for the first, 100.2 (0.2s later) for the
-    # second call's elapsed check, then whatever for its own record-keeping.
+    # _pace() reads the clock once on its first call and twice on later
+    # calls (elapsed, then the new timestamp): 100.0 for the first call,
+    # 100.2 for the second's elapsed check, then its timestamp.
     fake_clock = iter([100.0, 100.2, 101.0])
     with (
         patch("src.recommendation.lichess_client.time.monotonic", lambda: next(fake_clock)),
@@ -135,8 +133,7 @@ def test_study_chapter_embed_url_format():
 
 
 def test_study_chapter_embed_url_defaults_to_dark_theme():
-    # Not Lichess's own "auto" default -- confirmed live that auto follows
-    # the viewer's OS light/dark preference, which clashes with this app's
-    # own fixed walnut/parchment theme for anyone on a light-mode system.
+    # Not Lichess's "auto", which follows the viewer's system theme and
+    # shows a white board on light-mode systems.
     url = study_chapter_embed_url("1sGpLrkI", "JinVss1N")
     assert url == "https://lichess.org/study/embed/1sGpLrkI/JinVss1N?bg=dark"

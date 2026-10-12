@@ -51,13 +51,8 @@ def test_log_conversation_best_effort_inserts_via_the_pool():
 
 
 def test_log_conversation_best_effort_swallows_a_failure_instead_of_raising(caplog):
-    """Regression test for the actual reason this function exists: by the
-    time it's called (see chat.py's call site), the user's real answer is
-    already on screen. A DB hiccup logging that answer for later eval
-    review must never turn a successful answer into a crashed page -- the
-    broad except is deliberate here, not an oversight, and is documented as
-    such in the function's own docstring.
-    """
+    """The answer is already on screen when this runs, so a database error
+    while logging it must not raise."""
     db_pool = MagicMock()
     db_pool.getconn.side_effect = psycopg2.OperationalError("connection refused")
 
@@ -68,11 +63,8 @@ def test_log_conversation_best_effort_swallows_a_failure_instead_of_raising(capl
 
 
 def test_log_conversation_best_effort_swallows_a_missing_table_too(caplog):
-    """A distinct failure mode from the connection error above: the table
-    genuinely doesn't exist yet (a fresh deploy before the schema migration
-    has run). Not a retryable connection problem -- query_with_retry
-    re-raises it immediately -- but still must not reach the caller.
-    """
+    """A missing table (a deploy before the schema ran) isn't retried, but
+    must not reach the caller either."""
     db_pool = MagicMock()
     conn = MagicMock()
     db_pool.getconn.return_value = conn

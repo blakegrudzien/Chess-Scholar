@@ -54,15 +54,9 @@ def test_search_lichess_studies_reports_no_matches():
 
 
 def test_search_lichess_studies_discards_a_dropped_connection_instead_of_pooling_it():
-    """Regression test: this tool used to check a connection out with a
-    plain try/finally and always return it to the shared, process-wide
-    pool -- even one that had just failed with a dropped-connection error.
-    The next caller (a different user's session, since this pool is
-    process-wide, not per-session) would draw that same dead connection
-    and fail identically. query_with_retry (shared with chess_agent.py,
-    see its own docstring) discards a confirmed-dead connection instead of
-    pooling it, and retries once on a fresh one.
-    """
+    """A connection that fails with a dropped-connection error is closed,
+    not returned to the shared pool, and the query is retried on a fresh
+    one."""
     db_pool = MagicMock()
     dead_conn = MagicMock()
     fresh_conn = MagicMock()
@@ -110,14 +104,8 @@ def test_get_lichess_study_chapters_formats_and_populates_state():
 
 
 def test_get_lichess_study_chapters_shares_the_caller_supplied_http_client_and_pacer():
-    """Regression test: this used to call fetch_study_chapters with neither
-    argument, so every call spun up its own throwaway httpx.Client and
-    RequestPacer (whose pacing state -- _last_request_at -- starts fresh
-    each time) instead of sharing the caller's -- the one live,
-    user-facing Lichess call in the whole codebase that skipped the
-    courtesy the offline scripts already share correctly. build_tools must
-    thread http_client/pacer through, not silently drop them.
-    """
+    """The caller's shared HTTP client and pacer are passed through to
+    fetch_study_chapters, so Lichess requests stay paced across lookups."""
     db_pool = MagicMock()
     voyage_client = MagicMock()
     state = _SessionState()
@@ -196,7 +184,7 @@ def test_recommend_lichess_study_records_a_recommendation():
 def test_recommend_lichess_study_rejects_a_study_not_looked_up_first():
     tools, *_, state = _build_tools()
     result = tools["recommend_lichess_study"]("never_searched", "some_chapter", "blurb")
-    assert "look it up" in result
+    assert "Look it up" in result
     assert state.recommendations == []
 
 
@@ -236,7 +224,7 @@ def test_recommend_chessbase_game_records_a_recommendation():
 def test_recommend_chessbase_game_rejects_a_game_not_looked_up_first():
     tools, *_, state = _build_tools()
     result = tools["recommend_chessbase_game"]("never_looked_up", "blurb")
-    assert "look it up" in result
+    assert "Look it up" in result
     assert state.recommendations == []
 
 

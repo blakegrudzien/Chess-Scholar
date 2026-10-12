@@ -165,13 +165,8 @@ def test_collect_candidates_preserves_existing_records_across_runs(tmp_path):
 
 
 def test_collect_candidates_persists_partial_progress_when_it_crashes(tmp_path):
-    """Real, reproduced failure: an earlier version only wrote output_path
-    once, at the very end -- an unexpected exception partway through the
-    run (a listing sort hitting a page past Lichess's depth limit; see
-    iter_studies_by_sort's own fix for that specific case) discarded an
-    entire run's worth of already-fetched, rate-limited content. Whatever
-    made it into `existing` before the crash must survive it.
-    """
+    """Candidates collected before an exception are still written out, so
+    a failure partway through doesn't lose the run's rate-limited work."""
     cards = [_card("ok1"), _card("ok2"), _card("boom")]
     output_path = tmp_path / "candidates.jsonl"
 

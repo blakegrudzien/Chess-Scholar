@@ -15,7 +15,7 @@ def test_search_studies_embeds_query_and_ranks_by_distance():
     client = MagicMock()
     client.embed.return_value = MagicMock(embeddings=[[0.1, 0.2, 0.3]])
 
-    with patch("src.recommendation.study_search.register_vector") as mock_register:
+    with patch("src.rag.vector_search.register_vector") as mock_register:
         results = search_studies(conn, client, "sicilian dragon ideas", model="voyage-4", limit=5)
 
     mock_register.assert_called_once_with(conn)
@@ -46,7 +46,7 @@ def test_search_studies_returns_empty_list_when_no_matches():
     client = MagicMock()
     client.embed.return_value = MagicMock(embeddings=[[0.0]])
 
-    with patch("src.recommendation.study_search.register_vector"):
+    with patch("src.rag.vector_search.register_vector"):
         results = search_studies(conn, client, "nonexistent concept")
 
     assert results == []

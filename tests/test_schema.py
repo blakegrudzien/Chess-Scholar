@@ -1,16 +1,7 @@
-"""Applies the real scripts/init_db.sql against a throwaway database and
-checks the constraints it declares actually hold -- games.source and
-chunks.source_type both have CHECK constraints that no other test ever
-exercises: test_structured_search.py and test_similarity.py deliberately
-build their own simplified games/chunks tables without them (documented in
-test_structured_search.py's own fixture -- those tests only ever query
-game_id/source_type, not the constraint itself), so a regression that let
-an invalid value through db_loader.load_games/load_chunks would previously
-have been caught by nothing short of a production `psql` insert failing.
-
-This also incidentally verifies scripts/init_db.sql is valid, executable
-SQL -- nothing else in the test suite ever runs the real schema file at
-all.
+"""Runs the real scripts/init_db.sql against a throwaway database and checks
+its constraints hold (the CHECK constraints on games.source and
+chunks.source_type). Other database tests use simplified tables, so this is
+also the one test that runs the schema file itself.
 """
 
 from pathlib import Path
@@ -86,10 +77,8 @@ def test_games_source_check_accepts_the_two_documented_values(conn):
 
 
 def test_games_source_check_rejects_an_invalid_value(conn):
-    """Regression coverage: nothing in Python validates games.source
-    before insert (pgn_parser.GameRecord.source is a bare `str`) -- the
-    database CHECK constraint is the only thing enforcing this at all.
-    """
+    """Nothing in Python validates games.source, so the CHECK constraint is
+    the only guard."""
     with pytest.raises(psycopg2.errors.CheckViolation):
         _insert_game(conn, "g1", "not_a_real_source")
 

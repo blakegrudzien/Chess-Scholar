@@ -5,11 +5,9 @@ parallel: python-chess serializes concurrent analyse() calls on one engine
 process, since only one UCI command can be in flight at a time. These tests
 verify the pool instead delivers real parallelism, by driving multiple
 simulated users through the real ask() entry point at the same time, all
-sharing one EnginePool the same way app.py does. Only the Anthropic model
-call is faked (deterministic, no API cost) -- the fake is scripted to make
-the same tool call the real model makes for a position-evaluation question,
-so the real evaluate_chess_position tool and the real pool are what's
-actually exercised.
+sharing one EnginePool the same way app.py does. Only the Anthropic call
+is faked: it makes the same tool call the real model would for a
+position-evaluation question, so the real tool and pool do the work.
 
 Two properties are checked:
 1. Requests up to the pool size run in genuine parallel: each finishes close
@@ -59,11 +57,8 @@ def engine_pool():
 
 
 def _fake_client(fen: str) -> MagicMock:
-    """Stands in for the Anthropic client: skips the real model call (no API
-    cost, deterministic) but performs the same tool call the real model makes
-    for a position-evaluation question -- so this still exercises the real
-    evaluate_chess_position tool and the real engine pool underneath it.
-    """
+    """Stands in for the Anthropic client: no API call, but the same tool
+    call the real model makes for a position-evaluation question."""
     client = MagicMock()
 
     def fake_tool_runner(*, tools, **kwargs):

@@ -33,14 +33,13 @@ def test_embeds_single_batch_and_stops():
     )
     conn.commit.assert_called_once()
 
-    # One connection for the whole job -- no per-batch reconnect on the happy path.
+    # One connection for the whole job when nothing fails.
     assert connect.call_count == 1
     assert mock_register.call_count == 1
     conn.close.assert_called_once()
 
-    # The write is a single batched execute_values call, not one round-trip per row
-    # (128 individual UPDATEs per batch was the actual bottleneck in production --
-    # ~6s/batch of pure network round-trip time).
+    # One execute_values call per batch, not an UPDATE per row (128 separate
+    # updates cost ~6s per batch in round trips).
     mock_execute_values.assert_called_once()
     call = mock_execute_values.call_args
     sql, rows = call.args[1], call.args[2]
@@ -113,12 +112,11 @@ def test_connection_closed_even_if_batch_processing_fails():
 
     conn.close.assert_called_once()
     conn.commit.assert_not_called()
-    connect.assert_called_once()  # RuntimeError isn't a connection error -- no reconnect attempt
+    connect.assert_called_once()  # not a connection error, so no reconnect
 
 
 def test_reconnects_and_retries_once_on_operational_error():
-    # Same batch is still pending after the failed attempt, since nothing
-    # was committed -- the retry re-fetches and re-embeds it successfully.
+    # Nothing was committed, so the retry embeds the same batch again.
     batch = [(1, "text one"), (2, "text two")]
 
     conn1 = MagicMock()
@@ -203,10 +201,8 @@ def test_retries_on_voyage_timeout_without_reconnecting_db():
     assert connect.call_count == 1  # Voyage errors don't trigger a DB reconnect
     conn.close.assert_called_once()
     mock_execute_values.assert_called_once()
-    # Backoff is exponential with full jitter, so the exact delay is a random
-    # draw. What matters is that the retry waited at all, and stayed inside
-    # the window the first failure allows -- pinning one value would only
-    # assert which number random.uniform happened to return.
+    # Exponential backoff with full jitter: the delay is random, so check it
+    # falls inside the first failure's window rather than pinning a value.
     mock_sleep.assert_called_once()
     (delay,) = mock_sleep.call_args.args
     assert 0 <= delay <= RETRY_BACKOFF_BASE_SECONDS

@@ -15,8 +15,8 @@ from src.search.structured_search import (
 
 TEST_DB = "chess_rag_structured_search_test"
 
-# Two C50 games sharing the same first 3 moves (so Nc6/f3 land twice, at ply
-# 3/4), diverging after -- gives deterministic tie-breaking to assert on.
+# Two C50 games share their first 3 moves and then diverge, giving
+# predictable counts and tie-breaks.
 GAME_A = (
     '[Event "A"]\n[Date "2020.01.01"]\n[White "Alice"]\n[Black "Bob"]\n'
     '[Result "1-0"]\n[ECO "C50"]\n\n1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 1-0\n'
@@ -78,10 +78,8 @@ def conn(tmp_path_factory):
                 PRIMARY KEY (game_id, ply)
             )
         """)
-        # Simplified vs. the real chunks table (no embedding column, no
-        # source_type CHECK constraint) -- these tests only ever query
-        # game_id and source_type, and skipping embedding avoids requiring
-        # the pgvector extension in a test database that doesn't need it.
+        # A cut-down chunks table (no embedding column, no CHECK), so these
+        # tests don't need pgvector.
         cur.execute("""
             CREATE TABLE chunks (
                 chunk_id SERIAL PRIMARY KEY,
@@ -100,8 +98,7 @@ def conn(tmp_path_factory):
         path.write_text(text, encoding="utf-8")
         load_games(parse_pgn(path, source="test"), test_conn)
 
-    # D and E are the only source="chessbase" games -- select_narrative_game
-    # filters to that source, so A/B/C (source="test") must never match.
+    # Only D and E are ChessBase games, so A, B and C must never match.
     for name, text in [("d.pgn", GAME_D), ("e.pgn", GAME_E)]:
         path = tmp_dir / name
         path.write_text(text, encoding="utf-8")
@@ -194,7 +191,7 @@ def test_common_moves_at_ply_merges_identical_moves(conn):
 
 
 def test_common_moves_at_ply_breaks_ties_alphabetically(conn):
-    # Ply 6 diverges: game A plays Bc5, game B plays Nf6 -- tied at count 1.
+    # At ply 6 game A plays Bc5 and game B Nf6, one each.
     result = common_moves_at_ply(conn, "C50", 6)
     assert result == [MoveFrequency("Bc5", 1), MoveFrequency("Nf6", 1)]
 
@@ -208,10 +205,8 @@ def test_select_narrative_game_prefers_more_annotated_game(conn):
 
 
 def test_select_narrative_game_excludes_non_chessbase_source(conn):
-    # A and B (source="test") are C50, not C60, so they can't leak into a
-    # C60 query -- this specifically checks the *other* filter, source:
-    # querying A/B's own C50 code must find nothing, since no chessbase
-    # game exists at C50 (only D/E at C60 are chessbase-sourced).
+    # Checks the source filter: A and B are C50 but not ChessBase games, so
+    # a C50 query finds nothing.
     assert select_narrative_game(conn, ["C50"]) is None
 
 

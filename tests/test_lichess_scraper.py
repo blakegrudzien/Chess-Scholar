@@ -22,10 +22,7 @@ def _card_html(
     chapters: list[str] | None = None,
     members: list[str] | None = None,
 ) -> str:
-    """Build one study card matching the real markup structure found on
-    lichess.org/study/all/{sort}, verified live before this scraper was
-    written -- not a guess at the format.
-    """
+    """One study card in the markup lichess.org/study/all/{sort} uses."""
     chapters = chapters if chapters is not None else ["Chapter 1"]
     members = members if members is not None else [author]
     chapters_html = "".join(f'<li class="text">{c}</li>' for c in chapters)
@@ -113,12 +110,8 @@ def test_iter_studies_by_sort_paginates_until_a_short_page():
 
 
 def test_iter_studies_by_sort_treats_a_400_response_as_the_end_of_the_listing():
-    """Real, reproduced failure: requesting a large --popular-count walked
-    past the "popular" listing's actual depth, and Lichess responded 400
-    Bad Request to that page instead of an empty 200 the way every other
-    sort/page naturally ends -- this used to propagate as an unhandled
-    HTTPStatusError and abort the whole collection run.
-    """
+    """Past its maximum depth the "popular" listing returns 400 instead of
+    an empty page; that ends the listing rather than aborting the run."""
     full_page = _page_html([_card_html(f"id{i}") for i in range(STUDIES_PER_PAGE)])
     requested_pages = []
 

@@ -87,7 +87,6 @@ def test_ranks_by_longest_matching_opening_prefix(conn):
 
     assert by_event["Alice"] == 6  # exact full match
     assert by_event["Carol"] == 4  # diverges at ply 5 (Bb5 vs Bc4)
-    assert by_event["Eve"] == 0  # diverges at ply 1 (d4 vs e4)
 
 
 def test_results_ordered_best_match_first(conn):
@@ -105,7 +104,7 @@ def test_respects_limit(conn):
 
 
 def test_max_ply_caps_how_far_the_comparison_looks(conn):
-    # Only compare the first 3 plies -- A and B both match fully within that window.
+    # Compare only the first 3 plies, where A and B both match fully.
     results = find_similar_games(conn, USER_MOVES, max_ply=3, limit=10)
     by_white = {r.white: r.matching_plies for r in results}
     assert by_white["Alice"] == 3
@@ -121,16 +120,17 @@ def test_fen_after_reflects_the_position_at_the_matched_cutoff(conn):
     results = find_similar_games(conn, USER_MOVES, max_ply=20, limit=10)
     by_white = {r.white: r for r in results}
 
-    # Alice matches all 6 plies (1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5) -- the FEN
+    # Alice matches all 6 plies (1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5); the FEN
     # at that cutoff is the position after Black's 3...Bc5.
     board = chess.Board()
     for san in ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"]:
         board.push_san(san)
     assert by_white["Alice"].fen_after == board.fen()
 
-    # Eve's game diverges on White's very first move (d4 vs e4), so
-    # match_length is 0 -- there's no ply-0 row in `moves` to join against,
-    # and fen_after should come back None rather than the query silently
-    # excluding the game or erroring.
-    assert by_white["Eve"].matching_plies == 0
-    assert by_white["Eve"].fen_after is None
+
+def test_games_with_no_matching_moves_are_left_out(conn):
+    # Eve's game differs on White's very first move (d4 vs e4), so it shares
+    # nothing with the user's game and isn't a comparison worth showing.
+    results = find_similar_games(conn, USER_MOVES, max_ply=20, limit=10)
+    assert "Eve" not in {r.white for r in results}
+    assert all(r.matching_plies > 0 for r in results)

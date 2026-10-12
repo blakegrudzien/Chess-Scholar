@@ -1,26 +1,14 @@
-"""Real-browser coverage for the draggable board (src/ui/board_component),
-the one part of this app that genuinely cannot be verified by mocking --
-it's a hand-rolled chessboard.js integration wired through Streamlit's
-st.components.v2 bidirectional protocol, actual drag physics included.
+"""Real-browser tests (Playwright) for the board, the phone and desktop
+layouts, the tour and the resource lookup: the parts that run in the
+browser and can't be checked with mocks.
 
-Runs as part of the normal `pytest -q` / `pytest -v tests` command, same as
-every other test file here -- not a separate suite or CI job. Mirrors the
-project's own established pattern for "needs a real external resource, skip
-cleanly if it's not present" (see STOCKFISH_PATH in test_stockfish_eval.py
-and _postgres_available() in test_structured_search.py): if Playwright and a
-Chromium build aren't installed, this file's tests are skipped with a clear
-reason instead of failing the whole suite.
+Skipped with a reason when Playwright or Chromium isn't installed:
 
     pip install -e ".[dev]"
     playwright install chromium
 
-No live Postgres/Anthropic/Voyage/Stockfish credentials are needed for these
-tests specifically. Every external-resource getter is behind
-@st.cache_resource and reached only from a chat/recommendation button's
-on-click path, with one exception: booting the app starts a background
-database ping (app.py's _keep_database_warm). Without a database it fails
-on its own thread and only logs a warning, so the page and these tests are
-unaffected.
+No database or API keys are needed. Loading the app starts a background
+database ping, which without a database only logs a warning.
 """
 
 from __future__ import annotations
@@ -63,24 +51,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _free_port() -> int:
-    # Bind to port 0 to let the OS assign a free one, then release it --
-    # avoids colliding with a dev server the developer might already have
-    # running on Streamlit's default 8501. A small TOCTOU window exists
-    # between closing this socket and Streamlit binding the same port, not
-    # worth engineering around for a local, single-worker test suite.
+    # Port 0 gets a free port from the OS, avoiding a dev server on 8501.
     with socket.socket() as s:
         s.bind(("", 0))
         return s.getsockname()[1]
 
 
 def _launch_streamlit_app(script_relpath: str) -> Iterator[str]:
-    """Launch `script_relpath` (relative to the repo root) as a real
-    Streamlit server on a free port, yielding its base URL once healthy.
-    Shared by app_server (the real app) and replay_app_server (a small
-    harness -- see _replay_harness_app.py -- that seeds
-    st.session_state.game_path directly, so the read-only/Prev/Next replay
-    behavior can be tested without a real recommend_resources() call).
-    """
+    """Run `script_relpath` (from the repo root) as a Streamlit server on a
+    free port and yield its URL once it's healthy. Used for the real app and
+    the test harness apps."""
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
     proc = subprocess.Popen(
@@ -98,18 +78,13 @@ def _launch_streamlit_app(script_relpath: str) -> Iterator[str]:
         cwd=REPO_ROOT,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,  # so teardown can kill the whole process
-        # group, not just this one PID -- streamlit run can spawn a server
-        # process distinct from the one launched here depending on install
-        # configuration, and killing only the parent can leak an orphaned
-        # server still bound to the port.
+        # A new process group, so teardown also kills any server process
+        # streamlit spawned.
+        start_new_session=True,
     )
     try:
-        # /_stcore/health is Streamlit's own readiness endpoint (returns
-        # 200 "ok" only once actually serving) -- polling "/" instead would
-        # give a false positive, since Streamlit serves its static frontend
-        # shell immediately regardless of whether the app script has
-        # finished running.
+        # The health endpoint answers only once the app is serving; "/"
+        # answers immediately with the static frontend.
         for _ in range(60):
             try:
                 if httpx.get(f"{base_url}/_stcore/health", timeout=1).status_code == 200:
@@ -183,11 +158,7 @@ def _drag(page, from_square: str, to_square: str) -> None:
     page.mouse.up()
 
 
-# The FEN under the board is an `st.caption` with inline `` `code` ``
-# (see _render_board_panel), not an st.code() block, so it has no <pre> of
-# its own -- find the caption whose text starts with "FEN:" and read its
-# nested <code> element instead of matching on tag alone, since multiple
-# stCaptionContainer elements exist on the page (e.g. "Turn: White").
+# The FEN is inline code in a caption starting "FEN:", among other captions.
 _FEN_CAPTION_JS = (
     "[...document.querySelectorAll('[data-testid=\"stCaptionContainer\"]')]"
     ".find(c => c.textContent.startsWith('FEN:'))?.querySelector('code')"
@@ -212,15 +183,8 @@ def test_dragging_an_illegal_move_leaves_the_fen_unchanged(page) -> None:
 
 
 def test_replay_board_is_read_only(replay_page) -> None:
-    """draggable=False during replay must actually stop a drop from being
-    acted on, not just look inert -- _attempt_move mutates the (invisible,
-    behind-the-scenes) free-play board unconditionally, so if this ever
-    regressed, a drag during replay would corrupt that board silently
-    while the visibly-replayed piece just snaps back with no feedback at
-    all. Checking the FEN caption doesn't change is the only way to catch
-    that from outside; a passing drag with no visible effect could still
-    mean silent corruption happened underneath.
-    """
+    """A drag during replay must change nothing: a move there would alter
+    the hidden free-play game. The FEN caption must stay the same."""
     starting_fen = _board_fen(replay_page)
     _drag(replay_page, "e2", "e4")
     time.sleep(1)
@@ -483,9 +447,8 @@ def fake_agent_server() -> Iterator[str]:
 def test_resource_lookup_runs_in_the_background_and_unlocks_the_button(
     fake_agent_server: str,
 ) -> None:
-    """The lookup used to run inside the page's own script run, so any
-    interaction (a board move included) cancelled it. It now starts on its
-    own after each answer and survives the page being used meanwhile."""
+    """The lookup starts on its own after an answer, runs in the background
+    so a board move can't cancel it, and unlocks the button when done."""
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
@@ -557,8 +520,8 @@ def test_desktop_tour_keeps_its_order_and_says_drag(page) -> None:
 
 
 def test_evaluating_your_own_position_keeps_undo_available(fake_agent_server: str) -> None:
-    """Evaluate used to replace the board with a history-less copy of the
-    same position, disabling Undo."""
+    """Evaluating the board's position leaves its move history, and Undo,
+    intact."""
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:

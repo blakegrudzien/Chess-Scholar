@@ -1,11 +1,6 @@
-"""src/ui/chat.py has real branching logic (diagram placement, message
-history construction, the empty-answer fallback) but, before this file,
-zero automated coverage -- a change to any of it was only ever checked by
-hand in a browser or a throwaway script. AppTest (streamlit.testing.v1)
-drives the real Streamlit element tree without a browser, so it can assert
-on render *order*, not just "did this raise" -- essential for
-_render_answer_content, whose whole job is putting things in the right
-order.
+"""Tests for src/ui/chat.py. AppTest (streamlit.testing.v1) runs the real
+Streamlit element tree without a browser, so tests can check what renders
+and in what order, which matters most for diagram placement.
 """
 
 from streamlit.testing.v1 import AppTest
@@ -15,13 +10,9 @@ OTHER_FEN = "8/8/8/8/8/8/8/4K2k w - - 0 1"
 
 
 def _leaf_nodes(at: AppTest) -> list:
-    """Every markdown/iframe leaf under the app root, in document order,
-    however deeply nested inside container blocks (st.status, st.empty,
-    a placeholder's .container() -- ask_with_status uses all three). What
-    matters for _render_answer_content is that diagrams land *between* the
-    right text segments, not just that they're present somewhere, so this
-    walks the real tree instead of only checking top-level children.
-    """
+    """Every markdown and iframe element in document order, however deeply
+    nested, so tests can check that diagrams land between the right pieces
+    of text."""
     leaves = []
 
     def walk(node) -> None:
@@ -62,11 +53,8 @@ chat._render_answer_content(
 
 
 def test_render_answer_content_strips_unmatched_marker_and_falls_back_to_the_end():
-    """A marker whose label doesn't match any diagram must not leak its raw
-    "[[diagram: ...]]" syntax into the chat -- and the diagram it *should*
-    have matched (a different label the model never wrote a marker for)
-    still has to show up somewhere, so it falls back to the end.
-    """
+    """A marker that matches no diagram is removed from the text, and a
+    diagram with no marker still appears, after the text."""
     at = AppTest.from_string(f"""
 from src.ui import chat
 chat._render_answer_content(
@@ -83,11 +71,8 @@ chat._render_answer_content(
 
 
 def test_render_answer_content_puts_unlabeled_diagrams_at_the_end():
-    """evaluate_chess_position and find_similar_corpus_games report FENs
-    with label=None (see ask_with_status's docstring) -- there's no label
-    for the model to write a marker for, so these always land after the
-    full answer text, regardless of markers elsewhere in it.
-    """
+    """Unlabeled positions (engine evaluations, similar games) have no
+    marker to match, so they always follow the answer text."""
     at = AppTest.from_string(f"""
 from src.ui import chat
 chat._render_answer_content(
@@ -169,10 +154,8 @@ st.session_state["_history_first"] = history[0]["content"]
 
 
 def test_ask_with_status_shows_a_fallback_message_when_the_answer_is_empty():
-    """ask() can return an empty string when the tool-calling loop ends
-    without a clean synthesis turn (see chess_agent.ask's docstring) -- the
-    chat bubble must show something explaining that, not render nothing.
-    """
+    """An empty answer from ask() shows an explanation, not an empty
+    bubble."""
     at = AppTest.from_string("""
 from unittest.mock import patch
 from src.ui import chat
@@ -193,15 +176,9 @@ st.session_state["_touched"] = touched
 
 
 def test_ask_with_status_shows_a_fallback_message_when_the_api_call_fails():
-    """Regression test: ask_agent (chess_agent.ask -> the Anthropic SDK's
-    own tool_runner) can raise anthropic.APIError for a real, transient
-    failure -- a rate limit, a dropped connection, a 5xx from Anthropic --
-    none of which is a tool exception, so tool_runner's own "catches every
-    exception a tool raises" guarantee doesn't cover it. Before this fix,
-    that exception propagated all the way up and crashed the whole
-    Streamlit script instead of showing the same graceful fallback already
-    used for an empty answer.
-    """
+    """An API error from the SDK itself (rate limit, dropped connection,
+    5xx) isn't a tool exception, so tool_runner doesn't catch it. It must
+    produce the fallback message, not crash the page."""
     at = AppTest.from_string("""
 from unittest.mock import patch
 import httpx
@@ -223,12 +200,8 @@ st.session_state["_touched"] = touched
 
 
 def test_ask_with_status_places_a_diagram_at_its_marker_end_to_end():
-    """The actual regression this redesign fixes: a show_opening_line-style
-    diagram (a labeled FEN reported through on_position) has to land at its
-    [[diagram: ...]] marker in the rendered answer, not bunched at the end
-    -- exercised through the real ask_with_status path (streaming +
-    final replace), not just _render_answer_content in isolation.
-    """
+    """A labeled diagram lands at its [[diagram: ...]] marker when going
+    through the whole ask_with_status path, streaming included."""
     at = AppTest.from_string(f"""
 from unittest.mock import patch
 from src.ui import chat
@@ -386,23 +359,9 @@ _render_example_prompts(disabled=True)
 
 
 def test_clicking_an_example_prompt_stashes_it_as_a_pending_question():
-    """Regression test for a real, reproduced bug: _render_example_prompts
-    used to call _submit_question directly from inside its button's if-
-    block. That block runs from render_main_screen's `if not st.session_
-    state.chat_history:` branch, *before* that same script run's `for ...
-    in st.session_state.chat_history:` loop below it -- _submit_question
-    mutates and renders the new question/answer pair on the spot, then
-    that loop renders the same, now-nonempty chat_history all over again
-    in the same run, doubling every message. Stashing into pending_
-    question and rerunning instead (the same pattern _render_board_panel's
-    own triggers already use, see that function's docstring) means a
-    fresh script run makes the correct decision: chat_history is
-    non-empty from the start, so _render_example_prompts is skipped
-    entirely and the pending-question handling in render_main_screen
-    renders the new pair exactly once. This test covers the stash; the
-    single-render guarantee itself is render_main_screen's own pending-
-    question handling, already exercised for the board-triggered case.
-    """
+    """Clicking an example only stashes it as the pending question. The
+    examples render before the transcript, so submitting from the click
+    would draw the new exchange twice in the same run."""
     at = AppTest.from_string("""
 import streamlit as st
 from src.ui.chat import _render_example_prompts
@@ -417,8 +376,7 @@ _render_example_prompts()
     example_button.click().run()
 
     assert not at.exception
-    # Not submitted yet -- only stashed. chat_history stays untouched here;
-    # the actual submission is render_main_screen's job on the next pass.
+    # Stashed, not submitted: render_main_screen submits it on the next run.
     assert at.session_state.chat_history == []
     assert at.session_state.pending_question == (
         "How should White meet the Sicilian Defense?",
@@ -536,18 +494,10 @@ st.session_state["_context"] = lookup.call_args.args[0]
 
 
 def test_describe_uploaded_game_shows_a_friendly_error_for_a_header_delimiter_collision():
-    """Regression test: compute_game_id (parse_pgn -> parse_game ->
-    compute_game_id) deliberately raises ValueError if a PGN header
-    contains hash_utils.ID_DELIMITER ("|") -- untrusted user input this
-    code is directly reachable from via the chat's PGN attach, and until
-    this fix nothing caught it, so a player name containing "|" crashed
-    the whole script instead of showing the same honest message a
-    genuinely unparseable file already gets.
-
-    The message is returned rather than rendered: a successful upload is
-    followed by a rerun that would discard anything drawn here, so the
-    caller owns when to show it.
-    """
+    """A header containing the game-ID delimiter ("|") makes
+    compute_game_id raise ValueError. An upload like that gets the same
+    "couldn't find a game" message as an unreadable file, returned for the
+    caller to show."""
     at = AppTest.from_string('''
 class _FakeUpload:
     def __init__(self, text):
@@ -579,11 +529,8 @@ st.session_state["_result"] = _describe_uploaded_game(_FakeUpload(pgn), "")
 
 
 def test_describe_uploaded_game_rejects_a_file_with_no_moves():
-    """python-chess returns a Game for input containing no chess at all --
-    a text file of prose parses into a game with zero moves. Checking only
-    that a game came back let a non-PGN upload reach the model as an empty
-    move list, spending a request to answer nothing.
-    """
+    """python-chess parses prose into a game with zero moves; that must be
+    rejected, not sent to the model as an empty move list."""
     at = AppTest.from_string("""
 class _FakeUpload:
     def __init__(self, text):
@@ -640,18 +587,15 @@ st.session_state["_result"] = _describe_uploaded_game(_FakeUpload(pgn), "")
 
 
 def test_lookup_context_carries_the_board_position_and_the_answer():
-    """A question asked from the board carries almost no information on its
-    own -- the subject lives in the FEN beside it and in the answer that came
-    back. Searching the study library for the bare sentence matched nothing,
-    so every board-asked question reported "nothing was a close enough
-    match" while typed questions worked.
-    """
+    """A question asked from the board says little on its own; the lookup
+    context includes its position and the start of the answer, where the
+    opening gets named."""
     from src.ui.chat import _lookup_context
 
     fen = "rnbqkbnr/ppppp1pp/8/5p2/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2"
     history = [
         ("user", "How can white play in this position?", fen, []),
-        ("assistant", "This position (1.d4 f5) is the Dutch Defense -- ECO A80.", None, []),
+        ("assistant", "This position (1.d4 f5) is the Dutch Defense, ECO A80.", None, []),
     ]
 
     lookup = _lookup_context(history)
@@ -677,17 +621,10 @@ def test_lookup_context_handles_a_question_with_no_board_position():
 
 
 def test_submit_question_logs_the_real_conversation_for_later_eval_review():
-    """_submit_question is the one path every question submission goes
-    through (main chat input, example prompts, and the board-side ask
-    form, via pending_question) -- confirms it actually calls
-    log_conversation_best_effort with the real question/fen/answer, not
-    just that logging doesn't crash anything.
+    """Every question is logged with its question, position and answer.
 
-    Both get_db_pool and log_conversation_best_effort are mocked, not just
-    the latter -- get_db_pool() is evaluated as log_conversation_best_
-    effort's own argument before that (mocked) function is ever called,
-    so leaving it real would hit a genuine DB lookup here regardless of
-    the second patch (a real, reproduced CI failure from exactly this).
+    get_db_pool is mocked too: it's evaluated as an argument before the
+    mocked logger is called, and would otherwise need a real database.
     """
     at = AppTest.from_string("""
 from unittest.mock import MagicMock, patch

@@ -97,9 +97,8 @@ def test_game_id_differs_for_different_games(tmp_path):
 
 
 def test_compute_game_id_rejects_a_header_containing_the_delimiter():
-    # A "|" inside a header could shift where compute_game_id's joined
-    # fields appear to divide, letting two different games hash the same
-    # -- silently dropping one of them at insert time.
+    # A "|" in a header could make two different games hash the same, and
+    # one would be silently dropped at insert.
     headers = chess.pgn.Headers(
         {
             "White": "Weird|Name",
@@ -115,20 +114,13 @@ def test_compute_game_id_rejects_a_header_containing_the_delimiter():
 
 
 def test_parse_game_stops_at_the_first_illegal_move_instead_of_crashing():
-    """Regression test: python-chess's parser doesn't validate mainline
-    legality while parsing (GameNode.add_variation doesn't either,
-    confirmed directly here the same way annotation_extractor.py's own
-    test for the identical bug does) -- board.san() raises an
-    AssertionError on a move that parses fine but isn't actually legal in
-    the position reached so far. parse_game is reachable on untrusted,
-    user-uploaded PGN (src/ui/chat.py's _describe_uploaded_game calls
-    parse_pgn directly on an attached file), so a truncated-but-valid
-    GameRecord has to come back here, not a crash.
-    """
+    """python-chess parses a mainline move without checking it's legal, and
+    board.san() then fails. User uploads reach parse_game, so it returns
+    the game up to that move instead of crashing."""
     game = chess.pgn.Game()
     node = game.add_variation(chess.Move.from_uci("e2e4"))
     node = node.add_variation(chess.Move.from_uci("e7e5"))
-    # White to move again immediately -- illegal, e2e4 was never undone.
+    # White moves twice in a row, which is illegal.
     node.add_variation(chess.Move.from_uci("e2e4"))
 
     record = parse_game(game, source="user_upload")
@@ -137,21 +129,14 @@ def test_parse_game_stops_at_the_first_illegal_move_instead_of_crashing():
 
 
 def test_parse_game_truncates_at_threefold_repetition_when_requested():
-    """Regression test for the upload-path DoS fix: an untrusted PGN can
-    shuffle pieces back and forth indefinitely without ever making an
-    illegal move, so the "stop at the first illegal move" guard above
-    doesn't bound it. truncate_at_repetition=True stops recording moves
-    once a position has occurred a third time, the same point real chess
-    rules let a player claim a draw -- off by default so real historical
-    games that play on past a repeated position aren't truncated during
-    corpus ingestion (see parse_game's own docstring).
-    """
+    """An uploaded PGN can shuffle pieces back and forth legally forever.
+    truncate_at_repetition stops at a position's third occurrence (where a
+    draw can be claimed); it's off by default so ingested games that play
+    on past a repetition are kept whole."""
     game = chess.pgn.Game()
     node = game
-    # Nf3 Nf6 Ng1 Ng8, three times over: the starting position recurs after
-    # every 4-ply cycle (count 1 at the start, 2 after the first cycle, 3
-    # after the second) -- so this should stop after 8 plies, well before
-    # the 12 offered here.
+    # Nf3 Nf6 Ng1 Ng8 three times: the start position occurs for the third
+    # time after 8 plies, so parsing stops there, short of all 12.
     cycle = ["g1f3", "g8f6", "f3g1", "f6g8"]
     for uci in cycle * 3:
         node = node.add_variation(chess.Move.from_uci(uci))
@@ -182,20 +167,15 @@ def test_parse_year_accepts_a_normal_date():
 
 
 def test_parse_year_returns_none_for_missing_or_unknown_date():
-    # "????.??.??" is ChessBase's own placeholder for an unknown date, not
-    # malformed data -- routine in a real export, not a corner case.
+    # "????.??.??" is ChessBase's normal placeholder for an unknown date.
     assert parse_year(None) is None
     assert parse_year("") is None
     assert parse_year("????.??.??") is None
 
 
 def test_parse_year_rejects_an_implausible_year():
-    """Regression test: year_str.isdigit() alone accepted any 4-digit
-    numeric prefix, so a truncated/malformed header like "202.01.01"
-    silently parsed to year=202 -- a real value that would have polluted
-    games.year/chunks.year with nothing to catch it, and that trend
-    synthesis would have treated as a legitimate decade bucket.
-    """
+    """A malformed date like "202.01.01" is rejected instead of becoming the
+    year 202."""
     assert parse_year("202.01.01") is None  # truncated
     assert parse_year("0001.01.01") is None  # before chess as we know it existed
     assert parse_year("9999.01.01") is None  # implausibly far future

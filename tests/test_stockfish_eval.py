@@ -54,25 +54,25 @@ def _eval(*, score_cp=None, mate_in=None):
 
 def test_classify_move_sound_when_eval_barely_changes():
     before = _eval(score_cp=20)
-    after = _eval(score_cp=-10)  # mover's POV after negation: +10 -- 10cp loss
+    after = _eval(score_cp=-10)  # mover's view after negation: +10, a 10cp loss
     assert classify_move(before, after) == "sound"
 
 
 def test_classify_move_inaccuracy_at_threshold():
     before = _eval(score_cp=0)
-    after = _eval(score_cp=50)  # mover's POV: -50 -- exactly 50cp loss
+    after = _eval(score_cp=50)  # mover's view: -50, exactly a 50cp loss
     assert classify_move(before, after) == "inaccuracy"
 
 
 def test_classify_move_mistake_at_threshold():
     before = _eval(score_cp=0)
-    after = _eval(score_cp=100)  # mover's POV: -100 -- exactly 100cp loss
+    after = _eval(score_cp=100)  # mover's view: -100, exactly a 100cp loss
     assert classify_move(before, after) == "mistake"
 
 
 def test_classify_move_blunder_at_threshold():
     before = _eval(score_cp=0)
-    after = _eval(score_cp=200)  # mover's POV: -200 -- exactly 200cp loss
+    after = _eval(score_cp=200)  # mover's view: -200, exactly a 200cp loss
     assert classify_move(before, after) == "blunder"
 
 

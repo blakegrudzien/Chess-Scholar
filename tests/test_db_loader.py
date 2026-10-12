@@ -46,10 +46,7 @@ def _sample_game() -> GameRecord:
 
 def test_get_connection_reads_database_url(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@host:5432/db")
-    # load_dotenv(override=True) would otherwise clobber the monkeypatched
-    # value above with whatever's in this machine's real .env file -- not
-    # a concern for get_connection() itself, just for keeping this test
-    # isolated from real local config.
+    # Keeps this machine's real .env from overriding the patched value.
     with (
         patch("src.ingestion.db_loader.load_dotenv"),
         patch("src.ingestion.db_loader.psycopg2.connect") as mock_connect,
@@ -76,9 +73,8 @@ def test_load_games_inserts_games_and_moves():
     assert "INSERT INTO games" in games_sql
     assert "ON CONFLICT (game_id) DO NOTHING" in games_sql
     assert games_rows == [("abc123", "Alice", "Bob", "Test Event", 2021, "C00", "1-0", "lichess")]
-    # page_size must match the batch, or cur.rowcount silently reflects only
-    # execute_values' last internal page (default page_size=100) instead of
-    # the true total -- this is exactly the bug that slipped through before.
+    # page_size must match the batch, or cur.rowcount counts only
+    # execute_values' last internal page of 100.
     assert games_call.kwargs["page_size"] == len(games_rows)
 
     moves_sql, moves_rows = moves_call.args[1], moves_call.args[2]
@@ -115,8 +111,7 @@ def test_load_games_reports_zero_when_conflict_skips_row():
 
 
 def test_load_games_flushes_in_batches():
-    # A large PGN file shouldn't hold every row in memory until the end --
-    # verify flush actually happens mid-stream, not just once at completion.
+    # Rows are flushed as batches fill, not all at the end.
     games = [
         GameRecord(
             game_id=f"game{i}",
@@ -240,17 +235,9 @@ def test_load_chunks_skips_insert_when_no_chunks():
 
 
 def test_load_chunks_skips_a_chunk_with_no_year_instead_of_crashing_the_batch(caplog):
-    """Regression test: chunks.year is NOT NULL (scripts/init_db.sql,
-    "required for trend synthesis, do not skip"), but AnnotationChunk.year
-    is `int | None` -- pgn_parser.parse_year legitimately returns None for
-    a header ChessBase itself writes when a game's date is unknown
-    ("????.??.??"). That's routine in a real export, not a corner case:
-    before this fix, the first such chunk aborted the whole in-flight
-    transaction, silently discarding every chunk since the last commit,
-    not just the undated one. An undated chunk must be skipped (and
-    counted, loudly, so this is visible) rather than crash the batch or
-    insert a row that violates the schema's own stated invariant.
-    """
+    """chunks.year is NOT NULL, but ChessBase's "????.??.??" date parses to
+    None. An undated chunk is skipped and counted in a warning, instead of
+    failing the whole batch."""
     dated = _sample_chunk()
     undated = replace(dated, text="An annotation with no determinable year.", year=None)
     conn = MagicMock()
@@ -327,9 +314,7 @@ def test_get_connection_with_timeout_gives_up_after_the_wait_budget():
     db_pool = MagicMock()
     db_pool.getconn.side_effect = psycopg2.pool.PoolError("exhausted")
 
-    # Shrink both constants so this test doesn't actually wait 2 real
-    # seconds -- it's the retry-then-give-up behavior under test, not the
-    # specific timeout value.
+    # Shortened so the test doesn't wait the real 2 seconds.
     with (
         patch("src.ingestion.db_loader.DB_POOL_CHECKOUT_TIMEOUT_SECONDS", 0.05),
         patch("src.ingestion.db_loader.DB_POOL_CHECKOUT_POLL_INTERVAL_SECONDS", 0.01),

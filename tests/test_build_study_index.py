@@ -96,12 +96,9 @@ def test_check_feature_order_matches_training_passes_when_consistent(tmp_path):
 
 
 def test_check_feature_order_matches_training_raises_on_a_reorder(tmp_path):
-    """Regression test: the fitted ColumnTransformer inside the saved
-    pipeline bakes in feature *positions*, not names -- a future reorder
-    (or insertion/removal) of a FEATURE_NAMES entry without retraining
-    would silently score every candidate against the wrong columns
-    instead of raising, since nothing else checks this at all.
-    """
+    """The saved pipeline works by column position, so a FEATURE_NAMES
+    change without retraining must fail loudly instead of scoring against
+    the wrong columns."""
     metadata_path = tmp_path / "meta.json"
     reordered = [*FEATURE_NAMES[1:], FEATURE_NAMES[0]]
     metadata_path.write_text(json.dumps({"feature_names": reordered}), encoding="utf-8")
@@ -118,12 +115,8 @@ def test_check_feature_order_matches_training_raises_when_metadata_missing(tmp_p
 
 
 def test_select_eligible_raises_a_clear_error_when_the_model_is_missing():
-    """Regression test: joblib.load(MODEL_PATH) on a fresh clone (or a
-    models/ directory accidentally cleaned) used to raise a bare
-    FileNotFoundError with no guidance -- label_studies_app.py, one script
-    over in this same pipeline, already gives this exact courtesy for its
-    own missing-input case.
-    """
+    """A missing model file gives a message saying what to do, not a bare
+    FileNotFoundError."""
     with patch("scripts.build_study_index.MODEL_PATH") as mock_path:
         mock_path.exists.return_value = False
         with pytest.raises(RuntimeError, match="train_quality_classifier"):
@@ -139,20 +132,15 @@ def test_select_eligible_filters_by_quality_and_likes(monkeypatch, tmp_path):
     probas = iter([0.9, 0.9, 0.1])  # matches candidates order
 
     fake_pipeline = MagicMock()
-    # sklearn's real predict_proba always returns a numpy ndarray, which
-    # supports the [0, 1] tuple indexing _select_eligible relies on -- a
-    # plain list of lists doesn't, so the fake must match the real type.
+    # An ndarray like sklearn's, since _select_eligible indexes it [:, 1].
     fake_pipeline.predict_proba.side_effect = lambda x: np.array(
         [[1 - p, p] for p in [next(probas)]]
     )
 
     with (
         patch("scripts.build_study_index.joblib.load", return_value=fake_pipeline),
-        # Isolated from the real models/quality_classifier.meta.json on
-        # disk deliberately -- this test shouldn't start failing (or
-        # passing only by coincidence) because someone retrains the real
-        # model later; see the dedicated tests for
-        # _check_feature_order_matches_training's own behavior.
+        # Kept independent of the real metadata file, which changes when
+        # the model is retrained.
         patch("scripts.build_study_index._check_feature_order_matches_training"),
     ):
         eligible = _select_eligible(candidates)
@@ -161,10 +149,8 @@ def test_select_eligible_filters_by_quality_and_likes(monkeypatch, tmp_path):
 
 
 def test_select_eligible_against_a_real_fitted_pipeline(tmp_path):
-    # A mocked predict_proba can accept input shapes the real thing
-    # rejects -- this exercises the actual sklearn Pipeline (including the
-    # log1p/scaling preprocessing step) to catch that class of mismatch,
-    # the same one that slipped past the mocked version above.
+    # A real sklearn Pipeline, preprocessing included, rejects input shapes
+    # a mock would accept.
     from sklearn.linear_model import LogisticRegression
 
     from src.recommendation.feature_extraction import extract_features
@@ -213,8 +199,7 @@ def test_build_index_upserts_and_removes_ineligible(conn, tmp_path):
         f.write(json.dumps(_candidate("keep1", likes=100)) + "\n")
         f.write(json.dumps(_candidate("keep2", likes=100)) + "\n")
 
-    # Pre-seed the cache with a study that will no longer be eligible this
-    # run -- the real scenario a full sync (not append) needs to handle.
+    # A cached study that is no longer eligible must be removed by the sync.
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO lichess_study_cache "
@@ -244,10 +229,7 @@ def test_build_index_upserts_and_removes_ineligible(conn, tmp_path):
     ):
         build_index()
 
-    # build_index() closes the connection it was handed when it's done, the
-    # same resource-ownership contract every other DB-writing script in
-    # this project follows -- a fresh connection is needed to inspect the
-    # result afterward, not a reason to change that contract.
+    # build_index() closes its connection, so open a new one to check.
     verify_conn = psycopg2.connect(dbname=TEST_DB)
     with verify_conn.cursor() as cur:
         cur.execute("SELECT study_id FROM lichess_study_cache ORDER BY study_id")

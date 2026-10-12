@@ -1,6 +1,5 @@
-"""check_sync() itself needs a regression test, not just the repo state it
-happens to check today -- otherwise a bug in the comparison logic could
-silently pass in CI right alongside the drift it exists to catch.
+"""Tests check_sync() itself, so a bug in its comparison can't pass
+unnoticed along with the drift it should catch.
 """
 
 from unittest.mock import patch
@@ -9,10 +8,8 @@ from scripts.check_requirements_sync import check_sync
 
 
 def test_check_sync_passes_against_the_repo_files_as_they_actually_are():
-    """The real regression test: run it against this repo's actual
-    pyproject.toml/requirements.txt, not fixtures -- if someone edits one
-    without the other, this is the test that should fail.
-    """
+    """Runs against the repo's real pyproject.toml and requirements.txt, so
+    editing one without the other fails here."""
     assert check_sync() == []
 
 

@@ -13,6 +13,7 @@ from src.agent.chess_agent import (
     ask,
     build_tools,
 )
+from src.config import CLAUDE_MODEL
 from src.engine.engine_pool import EngineBusyError
 from src.engine.stockfish_eval import PositionEval
 from src.personalization.similarity import SimilarGame
@@ -51,13 +52,9 @@ def test_get_eco_summary_formats_stats():
 
 
 def test_get_eco_summary_reconnects_after_dropped_connection():
-    """tool_runner swallows exceptions a tool raises (turns them into a
-    tool_result error) rather than letting them propagate -- so a dropped
-    connection has to be discarded and replaced inside the tool call itself,
-    not by whatever calls ask(). This confirms the pool does that: the dead
-    connection is returned with close=True and a fresh one is checked out
-    for a retry within the same call.
-    """
+    """tool_runner turns tool exceptions into error results, so a dropped
+    connection must be replaced within the tool call: the dead one is
+    closed and the query retried on a fresh one."""
     db_pool = MagicMock()
     dead_conn = MagicMock()
     fresh_conn = MagicMock()
@@ -257,9 +254,8 @@ def test_evaluate_chess_position_rejects_invalid_fen():
 
 
 def test_evaluate_chess_position_reports_busy_when_pool_exhausted():
-    """When every pooled engine is checked out, the tool should return a
-    clear message the model can relay -- not raise and not hang.
-    """
+    """With every engine busy, the tool returns a message the model can
+    relay, rather than raising or hanging."""
     db_pool = MagicMock()
     engine_pool = MagicMock()
     busy_message = (
@@ -277,15 +273,8 @@ def test_evaluate_chess_position_reports_busy_when_pool_exhausted():
 
 
 def test_compare_candidate_moves_evaluates_all_candidates_concurrently():
-    """The whole reason this tool exists over calling evaluate_chess_position
-    once per candidate is that the candidates run in parallel, not one
-    after another (see chess_agent.py's own reasoning: a "compare several
-    lines" question that used to mean N sequential engine searches plus N
-    full model round trips was observed taking several real minutes).
-    Verified directly here, not just trusted from reading the code, by
-    tracking how many evaluate_position calls are genuinely in flight at
-    the same time.
-    """
+    """The candidates are evaluated in parallel, which is the point of this
+    tool: counts how many evaluations are in flight at once."""
     tools, _, _, _, _, _ = _build_tools()  # engine_pool.size == 2
     lock = threading.Lock()
     state = {"current": 0, "peak": 0}
@@ -464,8 +453,7 @@ def test_show_opening_line_rejects_an_illegal_move_without_calling_on_position()
 
     result = tools["show_opening_line"](["e4", "e5", "Qh5", "Ke7", "Qxe7"], "bogus")
 
-    # e5's king can't legally reach e7 in one move -- the sequence should
-    # fail at that step, not silently continue or show a wrong position.
+    # Ke7 isn't legal here, so the call fails at that move.
     on_position.assert_not_called()
     assert "not legal" in result or "isn't legal" in result
 
@@ -485,9 +473,7 @@ def test_show_opening_line_called_twice_reports_two_distinct_positions():
 
 
 def _tool_use_block(name: str, input: dict | None = None) -> MagicMock:
-    # MagicMock(name=...) is reserved by unittest.mock for the mock's own
-    # repr, not for setting a real .name attribute -- has to be set after
-    # construction, or block.name silently returns the internal mock name.
+    # MagicMock(name=...) names the mock itself, so .name is set afterwards.
     block = MagicMock(type="tool_use")
     block.name = name
     block.input = input or {}
@@ -524,7 +510,7 @@ def test_ask_returns_text_from_final_message_only():
 
     assert result == "The answer is 42."
     call_kwargs = client.beta.messages.tool_runner.call_args.kwargs
-    assert call_kwargs["model"] == "claude-sonnet-5"
+    assert call_kwargs["model"] == CLAUDE_MODEL
     assert call_kwargs["stream"] is True
     assert len(call_kwargs["tools"]) == 8
     assert call_kwargs["messages"] == [{"role": "user", "content": "some question"}]
@@ -584,11 +570,8 @@ def test_ask_recovers_when_the_loop_ends_on_a_tool_call_with_no_synthesis():
     dangling_turn = _stream_turn([_tool_use_block("search_annotations", {"query": "x"})])
 
     client = MagicMock()
-    # A real BaseSyncToolRunner exposes _params["messages"] (see
-    # _recover_synthesis's docstring for why this is read at all) -- a bare
-    # MagicMock() return_value already has an auto-speccing ._params
-    # attribute, so set it explicitly to a realistic accumulated
-    # conversation ending on the same dangling tool_use block.
+    # The conversation _recover_synthesis reads, ending on the unanswered
+    # tool_use block.
     runner = MagicMock()
     runner.__iter__.return_value = iter([dangling_turn])
     runner._params = {
@@ -613,9 +596,8 @@ def test_ask_recovers_when_the_loop_ends_on_a_tool_call_with_no_synthesis():
     )
 
     assert result == "Here is the real answer."
-    # The dangling tool_use-only assistant message must not be sent as-is
-    # (the API requires a tool_result immediately after any tool_use) --
-    # confirm it was dropped rather than forwarded verbatim.
+    # The unanswered tool_use message is dropped: the API requires a
+    # tool_result right after any tool_use.
     recovery_messages = client.beta.messages.create.call_args.kwargs["messages"]
     assert all(
         not (
@@ -631,15 +613,9 @@ def test_ask_recovers_when_the_loop_ends_on_a_tool_call_with_no_synthesis():
 
 
 def test_ask_recovers_when_the_loop_is_cut_off_on_a_tool_calling_turn():
-    """The loop can stop on a turn that made tool calls -- MAX_AGENT_TURNS is
-    enforced by tool_runner simply ending iteration, with no exception and no
-    signal. That turn's text is the one-sentence rationale the system prompt
-    asks for before a tool call, not an answer.
-
-    Recovering only on empty text is not enough: the rationale is non-empty,
-    so it would be returned as though it were the answer. That is what a user
-    sees as a long answer collapsing to a single sentence.
-    """
+    """When the loop stops on a tool-calling turn (tool_runner ends quietly
+    at MAX_AGENT_TURNS), that turn's text is a status line, not an answer,
+    so recovery must run even though the text isn't empty."""
     cut_off_turn = _stream_turn(
         [
             MagicMock(type="text", text="Checking Layer 1 for piece-placement stats."),
@@ -769,12 +745,8 @@ def test_ask_reports_position_via_on_position():
 
 
 def test_ask_does_not_crash_on_an_evaluate_chess_position_call_missing_fen():
-    """Regression test for a real, reproduced KeyError crash: a turn cut
-    off mid-generation (see MAX_TOKENS's comment) can produce an
-    evaluate_chess_position tool_use block whose input dict never got as
-    far as including "fen" at all. This must not crash the app -- just
-    skip reporting a position update for that turn.
-    """
+    """A turn cut off mid-generation can leave an evaluate_chess_position
+    call with no "fen" in its input; that is skipped, not a KeyError."""
     tool_turn = _stream_turn([_tool_use_block("evaluate_chess_position", {})])
     final_turn = _stream_turn([MagicMock(type="text", text="Final answer.")])
 

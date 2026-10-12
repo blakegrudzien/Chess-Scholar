@@ -19,7 +19,7 @@ def test_names_the_winner_on_checkmate():
     # Fool's mate.
     status = game_status(_board_after("f3", "e5", "g4", "Qh4"))
 
-    assert status == "Checkmate -- Black wins."
+    assert status == "Checkmate. Black wins."
 
 
 def test_reports_stalemate_as_a_draw():
@@ -35,11 +35,8 @@ def test_reports_insufficient_material():
 
 
 def test_threefold_repetition_is_reported_as_claimable_not_as_a_result():
-    """Under FIDE rules threefold repetition is a player's right to claim,
-    not an automatic end to the game. Reporting it as a finished draw is a
-    common chess-app bug, and it matters here because the board stays
-    playable afterward -- the game genuinely has not ended.
-    """
+    """Under FIDE rules threefold repetition is a draw a player may claim,
+    not the end of the game, and the board stays playable."""
     board = chess.Board()
     for _ in range(2):
         for san in ("Nf3", "Nf6", "Ng1", "Ng8"):
@@ -57,4 +54,4 @@ def test_detects_terminal_positions_loaded_from_a_bare_fen():
     checkmated = chess.Board("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
 
     assert not checkmated.move_stack
-    assert game_status(checkmated) == "Checkmate -- Black wins."
+    assert game_status(checkmated) == "Checkmate. Black wins."

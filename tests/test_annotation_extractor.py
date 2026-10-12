@@ -110,18 +110,13 @@ def test_glyph_mixed_with_prose_keeps_prose_only(tmp_path):
 
 
 def test_iter_plies_with_comments_stops_at_the_first_illegal_move():
-    """Real, reproduced crash: a broader slice of scraped Lichess study PGN
-    included a chapter whose mainline had a move that wasn't actually legal
-    in the position reached so far (python-chess's parser doesn't validate
-    this while parsing -- GameNode.add_variation doesn't either, confirmed
-    directly). board.san() on that move raised an AssertionError that took
-    down the whole build_study_index.py batch over one bad study. This
-    should degrade to "fewer plies for this one chapter", not crash.
-    """
+    """A chapter with an illegal mainline move (python-chess parses it
+    anyway, and board.san() then fails) yields the moves before it instead
+    of crashing a whole batch."""
     game = chess.pgn.Game()
     node = game.add_variation(chess.Move.from_uci("e2e4"))
     node = node.add_variation(chess.Move.from_uci("e7e5"))
-    # White to move again immediately -- illegal, e2e4 was never undone.
+    # White moves twice in a row, which is illegal.
     node.add_variation(chess.Move.from_uci("e2e4"))
 
     plies = list(iter_plies_with_comments(game))

@@ -28,12 +28,8 @@ def test_iter_study_chapters_single_chapter():
 
 
 def test_iter_study_chapters_logs_a_warning_instead_of_silently_truncating(caplog):
-    """Regression test: a parse failure used to stop the generator with a
-    bare `except Exception: return` and no logging at all -- this backs
-    both the quality classifier's training features and the search
-    index's embedding text, so a chapter silently dropped here degrades
-    either with nothing pointing at why.
-    """
+    """A chapter that fails to parse is logged, not dropped silently: it
+    would otherwise weaken training data or search text without a trace."""
     with (
         patch("chess.pgn.read_game", side_effect=[object(), ValueError("bad pgn")]),
         caplog.at_level(logging.WARNING),

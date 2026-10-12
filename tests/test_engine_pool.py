@@ -27,14 +27,8 @@ def test_checkout_yields_a_pooled_engine_and_returns_it_after():
 
 
 def test_checkout_discards_a_terminated_engine_and_respawns_a_replacement():
-    """Regression test: the old code unconditionally returned whatever
-    engine checkout() handed out back to the pool in a bare `finally`,
-    even one whose subprocess had just died mid-use (EngineTerminatedError
-    -- crashed, killed, an internal fault). The next checkout() would then
-    hand out that same broken engine and fail identically. A dead engine
-    must be discarded, not pooled, and replaced so self.size (quoted
-    directly in EngineBusyError's message) stays true.
-    """
+    """An engine whose process died (EngineTerminatedError) is not returned
+    to the pool; a replacement keeps the pool at full size."""
     dead_engine = MagicMock(name="dead")
     replacement_engine = MagicMock(name="replacement")
     with patch("chess.engine.SimpleEngine.popen_uci", side_effect=[dead_engine]):
@@ -48,22 +42,15 @@ def test_checkout_discards_a_terminated_engine_and_respawns_a_replacement():
             assert engine is dead_engine
             raise chess.engine.EngineTerminatedError("process exited")
 
-    # The replacement, not the dead engine, is what the next caller gets --
-    # and the pool is back at full capacity (size=1), not exhausted.
+    # The next caller gets the replacement, and the pool is full again.
     with pool.checkout() as engine:
         assert engine is replacement_engine
 
 
 def test_checkout_surfaces_original_error_when_respawn_after_crash_also_fails(caplog):
-    """Regression test: the respawn call used to sit unguarded inside the
-    EngineTerminatedError handler -- if it also failed (binary transiently
-    missing, resource limits), that new exception replaced the original
-    EngineTerminatedError, the pool was left silently one engine short of
-    self.size with nothing put back, and the caller never even saw the
-    real error that started it. The original error must still propagate,
-    and the capacity loss must be logged loudly (ERROR) instead of
-    disappearing.
-    """
+    """If the replacement also fails to start, the original
+    EngineTerminatedError still reaches the caller, and the lost capacity
+    is logged as an error."""
     dead_engine = MagicMock(name="dead")
     with patch("chess.engine.SimpleEngine.popen_uci", side_effect=[dead_engine]):
         pool = EnginePool("stockfish", size=1)
@@ -86,10 +73,8 @@ def test_checkout_surfaces_original_error_when_respawn_after_crash_also_fails(ca
 
 
 def test_checkout_still_returns_a_healthy_engine_after_an_unrelated_error():
-    """A caller's own bug (or any exception unrelated to engine health)
-    must not be treated as if the engine itself died -- it's still a
-    perfectly good, live subprocess and belongs back in the pool.
-    """
+    """An exception from the caller's own code returns the engine to the
+    pool, since the engine is fine."""
     engine = MagicMock(name="engine")
     with patch("chess.engine.SimpleEngine.popen_uci", side_effect=[engine]):
         pool = EnginePool("stockfish", size=1)
@@ -114,9 +99,7 @@ def test_close_quits_every_engine():
 
 
 def test_close_continues_past_one_engine_failing_to_quit():
-    """One engine failing to shut down cleanly must not strand the rest --
-    close() exists to release every engine, not to stop at the first error.
-    """
+    """close() releases every engine even if one fails to quit."""
     engines = _mock_engines(3)
     engines[1].quit.side_effect = RuntimeError("already dead")
     with patch("chess.engine.SimpleEngine.popen_uci", side_effect=engines):
@@ -129,10 +112,8 @@ def test_close_continues_past_one_engine_failing_to_quit():
 
 
 def test_init_cleans_up_already_spawned_engines_when_a_later_one_fails():
-    """If engine 3 of 3 fails to spawn, engines 1 and 2 are already live
-    subprocesses -- __init__ never finishes, so nothing else will ever get
-    a chance to close them unless it happens here.
-    """
+    """If engine 3 of 3 fails to start, engines 1 and 2 are shut down,
+    since nothing else could close them."""
     engines = _mock_engines(2)
     with (
         patch(

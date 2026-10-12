@@ -80,14 +80,8 @@ def test_load_labeled_dataset_preserves_missing_phase_as_none(tmp_path):
 
 
 def test_load_labeled_dataset_raises_a_clear_error_for_an_orphaned_label(tmp_path):
-    """Regression test: a study_labels.jsonl entry whose study_id isn't in
-    study_candidates.jsonl (a stale labels file, a hand-edited candidates
-    file, or a wrong path) used to raise a bare, unhelpful KeyError. This
-    is a real possibility, not just a theoretical one -- the two files are
-    edited independently (label_studies_app.py appends to one, collect_
-    study_candidates.py to the other) with nothing enforcing they stay in
-    sync.
-    """
+    """A label for a study missing from the candidates file (the two files
+    are written separately) gives a clear error, not a bare KeyError."""
     candidates_path = tmp_path / "candidates.jsonl"
     labels_path = tmp_path / "labels.jsonl"
     _write_jsonl(candidates_path, [_candidate("c1")])
@@ -119,15 +113,9 @@ def test_build_feature_matrix_shape_and_order(tmp_path):
 
 
 def _synthetic_feature_matrix(rng: np.random.Generator, n: int) -> np.ndarray:
-    """Values shaped like real StudyFeatures.as_vector() output: every
-    log1p-transformed column (all but comment_density and
-    has_pre_game_comment -- see _LOG_TRANSFORM_FEATURES) is a non-negative
-    count in the real pipeline, by construction of feature_extraction.py,
-    so build_pipeline's log1p step relies on that. Plain rng.normal() would
-    produce negative values and log1p(x < -1) is NaN -- not a bug in
-    build_pipeline, just an unrealistic input shape a random normal draw
-    doesn't match.
-    """
+    """Values shaped like real feature vectors: the log-transformed columns
+    are non-negative counts. A normal draw could go below -1, where log1p
+    is NaN."""
     x = rng.integers(0, 50, size=(n, 11)).astype(float)
     x[:, 3] = rng.uniform(0, 1, size=n)  # comment_density, index 3
     x[:, 6] = rng.integers(0, 2, size=n)  # has_pre_game_comment, index 6
@@ -178,9 +166,8 @@ def test_breakdown_metrics_respects_min_group_size():
 
 
 def test_breakdown_metrics_respects_min_minority_class_size():
-    # Group "a" has 10 examples total (clears a size-5 minimum) but only 1
-    # of the minority class -- this is exactly the real "unknown"-phase
-    # case that motivated the guard: total size alone isn't enough.
+    # Group "a" has 10 examples, enough overall, but only 1 of the minority
+    # class.
     y_true = np.array([1] * 9 + [0])
     y_proba = np.array([0.9] * 9 + [0.1])
     groups = ["a"] * 10
