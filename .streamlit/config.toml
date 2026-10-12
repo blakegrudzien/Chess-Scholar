@@ -3,6 +3,11 @@
 [client]
 showErrorDetails = "none"
 
+# A PGN of thousands of games fits in 1MB; Streamlit's 200MB default would
+# let a few large uploads run the server out of memory.
+[server]
+maxUploadSize = 1
+
 # Walnut, oxblood and parchment: a chess study, not a SaaS dashboard.
 #
 # secondaryBackgroundColor stays light because Streamlit uses the one dark

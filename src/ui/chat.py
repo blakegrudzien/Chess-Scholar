@@ -27,7 +27,7 @@ import chess.pgn
 import chess.svg
 import streamlit as st
 
-from src.agent.chess_agent import OnPosition, ask
+from src.agent.chess_agent import MAX_PLY_WINDOW, OnPosition, ask
 from src.ingestion.pgn_parser import parse_pgn
 from src.recommendation.pipeline import (
     ChessbaseGameRecommendation,
@@ -38,6 +38,11 @@ from src.recommendation.pipeline import (
 from src.ui.board_panel import render_board_panel
 from src.ui.conversation_log import log_conversation_best_effort
 from src.ui.help_text import FEN_HELP
+from src.ui.input_limits import (
+    MAX_QUESTION_CHARS,
+    accept_question_length,
+    get_shared_question_limit,
+)
 from src.ui.progress_bar import FINISH_SECONDS, finishing_bar_html, running_bar_html
 from src.ui.resources import (
     get_anthropic_client,
@@ -414,9 +419,17 @@ def _describe_uploaded_game(
                 f"{len(move_sans)} are analyzed.",
             )
         )
-    game_description = (
-        f"Here is a game I uploaded, as a list of moves in order: {', '.join(move_sans)}."
-    )
+    # Only the opening goes into the prompt: the similarity search compares
+    # at most MAX_PLY_WINDOW plies, and a full game would only add cost.
+    if len(move_sans) > MAX_PLY_WINDOW:
+        game_description = (
+            f"Here is the opening of a game I uploaded, as a list of its first "
+            f"{MAX_PLY_WINDOW} moves in order: {', '.join(move_sans[:MAX_PLY_WINDOW])}."
+        )
+    else:
+        game_description = (
+            f"Here is a game I uploaded, as a list of moves in order: {', '.join(move_sans)}."
+        )
     if user_text.strip():
         return f"{game_description} {user_text}", notices
     # A bare upload gives the model no sense of how much to write, so the
@@ -554,6 +567,9 @@ def _submit_question(question: str, *, fen_context: str | None = None) -> bool:
             "You're asking questions faster than this demo can keep up with. Try again in a moment."
         )
         return False
+    if not get_shared_question_limit().try_acquire():
+        st.warning("This demo has reached its question limit for today. Please try again tomorrow.")
+        return False
     request_times.append(now)
     # The previous answer's lookup no longer applies; its results are dropped.
     st.session_state.resource_lookup = None
@@ -678,6 +694,7 @@ def render_main_screen() -> None:
 
         submission = st.chat_input(
             "Ask a chess question...",
+            max_chars=MAX_QUESTION_CHARS,
             accept_file=True,
             file_type=["pgn"],
         )
@@ -687,7 +704,9 @@ def render_main_screen() -> None:
         if submission is not None:
             question = None
             notices: list[tuple[str, str]] = []
-            if submission.files:
+            if not accept_question_length(submission.text):
+                pass
+            elif submission.files:
                 question, notices = _describe_uploaded_game(submission.files[0], submission.text)
                 if question is None:
                     # No rerun follows a rejected upload, so show these now.

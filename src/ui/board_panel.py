@@ -10,6 +10,7 @@ import streamlit as st
 
 from src.ui.board_component import chess_board
 from src.ui.help_text import FEN_HELP, PLY_HELP
+from src.ui.input_limits import MAX_QUESTION_CHARS, accept_question_length
 
 # Largest board edge in CSS pixels. The board shrinks below this when its
 # column is narrower (see wiring.js), e.g. to 328px on a 360px-wide phone.
@@ -225,8 +226,9 @@ def render_board_panel(*, disabled: bool = False) -> None:
             "Ask about this position...",
             placeholder="Ask about this position...",
             label_visibility="collapsed",
+            max_chars=MAX_QUESTION_CHARS,
         )
         asked = st.form_submit_button("Ask", disabled=disabled)
-    if asked and position_question:
+    if asked and position_question and accept_question_length(position_question):
         st.session_state.pending_question = (position_question, current_board.fen())
         st.rerun()
