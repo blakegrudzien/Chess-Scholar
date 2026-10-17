@@ -362,8 +362,11 @@ def test_quick_consecutive_moves_all_reach_the_server(slow_page) -> None:
     _drag(slow_page, "e7", "e5")
     _drag(slow_page, "g1", "f3")
     after_three_moves = "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b"
+    # Three moves confirmed one after another, each delayed 1.5s by the slow
+    # harness plus a rerun, can pass 15s on a 2-core CI runner. A lost move
+    # never arrives, so the longer wait doesn't hide one.
     slow_page.wait_for_function(
-        f"{_FEN_CAPTION_JS}?.textContent.includes('{after_three_moves}')", timeout=15000
+        f"{_FEN_CAPTION_JS}?.textContent.includes('{after_three_moves}')", timeout=30000
     )
 
 
